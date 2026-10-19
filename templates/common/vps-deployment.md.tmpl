@@ -1,0 +1,18 @@
+# __INIT_APP_NAME__ VPS Pull Deployment
+
+## Generated contract
+
+- Container port: __INIT_APP_PORT__
+- VPS host port: __INIT_VPS_HOST_PORT__
+- Health path: __INIT_HEALTH_PATH__
+- Deployment channel: __INIT_VPS_CHANNEL__
+
+## VPS setup
+
+1. Install Docker Engine and Docker Compose plugin.
+2. Copy ops/vps contents to /opt/__INIT_APP_NAME__.
+3. Copy app.env.example to app.env and fill pull-only ACR credentials locally.
+4. Install either the generated systemd service/timer or cron example.
+5. Run deploy-image.sh once manually and verify the health endpoint.
+
+The VPS pulls the mutable environment channel tag while CI also preserves immutable SHA tags. Do not use latest as a deployment channel.

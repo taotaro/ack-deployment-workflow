@@ -1,0 +1,32 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: __APP_NAME__-hpa
+  labels:
+    app: __APP_NAME__
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: __APP_NAME__
+  maxReplicas: __HPA_MAX_REPLICAS__
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: __HPA_CPU_UTILIZATION__
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: __HPA_MEMORY_UTILIZATION__
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: __HPA_SCALE_DOWN_STABILIZATION__
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 15

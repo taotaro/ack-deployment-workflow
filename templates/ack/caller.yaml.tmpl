@@ -1,0 +1,58 @@
+name: Build Docker Image To ACR And Deploy To ACK
+'on':
+  workflow_dispatch:
+    inputs:
+      instance_code:
+        description: lark审批实例
+        required: true
+        type: string
+      project_name:
+        description: 项目名称
+        required: true
+        type: string
+      business_module:
+        description: 业务模块
+        required: true
+        type: string
+      environment:
+        description: 部署环境
+        required: true
+        type: string
+      description:
+        description: 描述说明
+        required: false
+        type: string
+      approval_time:
+        description: lark审批时间
+        required: false
+        type: string
+      release_type:
+        description: 发布类型
+        required: true
+        type: string
+jobs:
+  build:
+    uses: taotaro/ack-deployment-workflow/.github/workflows/deploy-ack.yaml@__CENTRAL_SHA__
+    with:
+      profile: single-app
+      github_environment: ${{ github.ref_name }}-env
+      notification_project_fallback: Action Build Error
+      instance_code: ${{ inputs.instance_code }}
+      project_name: ${{ inputs.project_name }}
+      business_module: ${{ inputs.business_module }}
+      environment: ${{ inputs.environment }}
+      description: ${{ inputs.description }}
+      approval_time: ${{ inputs.approval_time }}
+      release_type: ${{ inputs.release_type }}
+      region_id: ${{ vars.LUMIO_CURRENT_REGION_ID }}
+      acr_registry: ${{ vars.LUMIO_CURRENT_ACR_REGISTRY }}
+      acr_instance_id: ${{ vars.LUMIO_CURRENT_ACR_INSTANCE_ID }}
+      ack_cluster_id: ${{ vars.LUMIO_CURRENT_ACK_CLUSTER_ID }}
+    secrets:
+      ALICLOUD_ACCESS_KEY_ID: ${{ secrets.LUMIO_CURRENT_ALICLOUD_ACCESS_KEY_ID }}
+      ALICLOUD_ACCESS_KEY_SECRET: ${{ secrets.LUMIO_CURRENT_ALICLOUD_ACCESS_KEY_SECRET
+        }}
+      LARK_BOT_WEBHOOK: ${{ secrets.LARK_BOT_WEBHOOK }}
+      CI_ACCESS_TOKEN: ${{ secrets.CI_ACCESS_TOKEN }}
+      MONGODB_URI: ${{ secrets.MONGODB_URI }}
+      MONGODB_DB: ${{ secrets.MONGODB_DB }}

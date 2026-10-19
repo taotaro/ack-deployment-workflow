@@ -1,0 +1,33 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+patches:
+  - target:
+      kind: Deployment
+      name: __APP_NAME__
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: "__PRODUCTION_REQUEST_CPU__"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: "__PRODUCTION_REQUEST_MEMORY__"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "__PRODUCTION_LIMIT_CPU__"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: "__PRODUCTION_LIMIT_MEMORY__"
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: __APP_NAME__-hpa
+    patch: |-
+      - op: add
+        path: /spec/minReplicas
+        value: __PRODUCTION_HPA_MIN_REPLICAS__
+      - op: replace
+        path: /spec/maxReplicas
+        value: __PRODUCTION_HPA_MAX_REPLICAS__

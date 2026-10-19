@@ -1,0 +1,375 @@
+name: "Build Docker Image To ACR And Deploy To ACK"
+
+on:
+  push:
+    branches:
+__INIT_BRANCHES_YAML__
+  workflow_dispatch:
+    inputs:
+      instance_code:
+        description: 'lark审批实例'
+        required: true
+        type: string
+      project_name:
+        description: '项目名称'
+        required: true
+        type: string
+      business_module:
+        description: '业务模块'
+        required: true
+        type: string
+      environment:
+        description: '部署环境'
+        required: true
+        type: string
+      description:
+        description: '描述说明'
+        required: false
+        type: string
+      approval_time:
+        description: 'lark审批时间'
+        required: false
+        type: string
+      release_type:
+        description: '发布类型'
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name }}-env
+    env:
+      TZ: Asia/Shanghai
+      # Build arguments can change without a source commit; include run identity so each dispatch changes the Deployment image reference.
+      IMAGE_TAG: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+      IMAGE_URL: ${{ secrets.ACR_REGISTRY }}/${{ vars.ACR_NAMESPACE }}/${{ vars.ACR_REPOSITORY }}
+      CUSTOMER_NAME: ${{ vars.CUSTOMER_NAME }}
+      PRODUCT_NAME: ${{ vars.PRODUCT_NAME }}
+      MODULE_NAME: ${{ vars.MODULE_NAME }}
+      DEPLOY_OVERLAY: ${{ vars.DEPLOY_OVERLAY }}
+      ENV_NAME: ${{ vars.ENVIRONMENT }}
+      KUSTOMIZE_IMAGE_NAME: ${{ vars.KUSTOMIZE_IMAGE_NAME }}
+      SERVICE_ACCOUNT_NAME: ${{ vars.SERVICE_ACCOUNT_NAME }}
+      CONFIG_MAP_NAME: ${{ vars.CONFIG_MAP_NAME }}
+      ALIYUN_LOG_STDOUT_NAME: ${{ vars.ALIYUN_LOG_STDOUT_NAME }}
+      APP_PORT: ${{ vars.APP_PORT }}
+      SERVICE_PORT: ${{ vars.SERVICE_PORT }}
+      HEALTHCHECK_PATH: ${{ vars.HEALTHCHECK_PATH }}
+      STARTUP_PROBE_FAILURE_THRESHOLD: ${{ vars.STARTUP_PROBE_FAILURE_THRESHOLD }}
+      REPLICA_COUNT: ${{ vars.REPLICA_COUNT }}
+      REQUEST_CPU: ${{ vars.REQUEST_CPU }}
+      REQUEST_MEMORY: ${{ vars.REQUEST_MEMORY }}
+      LIMIT_CPU: ${{ vars.LIMIT_CPU }}
+      LIMIT_MEMORY: ${{ vars.LIMIT_MEMORY }}
+      PRODUCTION_REPLICA_COUNT: ${{ vars.PRODUCTION_REPLICA_COUNT }}
+      PRODUCTION_REQUEST_CPU: ${{ vars.PRODUCTION_REQUEST_CPU }}
+      PRODUCTION_REQUEST_MEMORY: ${{ vars.PRODUCTION_REQUEST_MEMORY }}
+      PRODUCTION_LIMIT_CPU: ${{ vars.PRODUCTION_LIMIT_CPU }}
+      PRODUCTION_LIMIT_MEMORY: ${{ vars.PRODUCTION_LIMIT_MEMORY }}
+      HPA_MAX_REPLICAS: ${{ vars.HPA_MAX_REPLICAS }}
+      HPA_CPU_UTILIZATION: ${{ vars.HPA_CPU_UTILIZATION }}
+      HPA_MEMORY_UTILIZATION: ${{ vars.HPA_MEMORY_UTILIZATION }}
+      HPA_SCALE_DOWN_STABILIZATION: ${{ vars.HPA_SCALE_DOWN_STABILIZATION }}
+      PRODUCTION_HPA_MIN_REPLICAS: ${{ vars.PRODUCTION_HPA_MIN_REPLICAS }}
+      PRODUCTION_HPA_MAX_REPLICAS: ${{ vars.PRODUCTION_HPA_MAX_REPLICAS }}
+      K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE }}
+    steps:
+      - name: Checkout code from the specified branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Print all received inputs and variables
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "=== 输入变量 ==="
+            echo "IMAGE_TAG: ${{ env.IMAGE_TAG }}"
+            echo "IMAGE_URL: ${{ env.IMAGE_URL }}"
+
+            echo "=== 输入参数 ==="
+            echo "lark审批实例: ${{ inputs.instance_code }}"
+            echo "项目名称: ${{ inputs.project_name }}"
+            echo "发布类型: ${{ inputs.release_type }}"
+            echo "业务模块: ${{ inputs.business_module }}"
+            echo "部署环境: ${{ inputs.environment }}"
+            echo "描述说明: ${{ inputs.description }}"
+            echo "lark审批时间: ${{ inputs.approval_time }}"
+          fi
+
+          echo ""
+          echo "=== 仓库信息 ==="
+          echo "仓库: ${{ github.repository }}"
+          echo "分支名称: ${{ github.ref_name }}"
+          echo "运行ID: ${{ github.run_id }}"
+          echo "触发者: ${{ github.actor }}"
+
+      - name: Record start time
+        run: echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
+
+      - name: Set timezone to Asia/Shanghai
+        run: sudo timedatectl set-timezone Asia/Shanghai && date
+
+      # 登录 ACR（使用 AK/SK 认证，企业版需要 instance-id）
+      - name: Login to ACR
+        uses: aliyun/acr-login@v1
+        with:
+          login-server: https://${{ secrets.ACR_REGISTRY }}
+          access-key-id: ${{ secrets.ALICLOUD_ACCESS_KEY_ID }}
+          access-key-secret: ${{ secrets.ALICLOUD_ACCESS_KEY_SECRET }}
+          region-id: ${{ secrets.ALICLOUD_REGION_ID }}
+          instance-id: ${{ secrets.ACR_INSTANCE_ID }}
+
+      # 加载构建参数（如 Dockerfile ARG 所需的 API Key、URL 等）
+      # 在 GitHub Environment 中设置 BUILD_ARGS 变量（JSON 格式），自动转为 CONFIG_MAP_* 环境变量
+      - name: Load build arguments
+        if: ${{ vars.BUILD_ARGS != '' }}
+        env:
+          BUILD_ARGS_JSON: ${{ vars.BUILD_ARGS }}
+        run: echo "${BUILD_ARGS_JSON}" | jq -r 'to_entries[] | "CONFIG_MAP_\(.key)=\(.value)"' >> "$GITHUB_ENV"
+
+      # 编译并提交镜像到 ACR
+      - name: Build and Push Docker Image To ACR
+        uses: taotaro/actions-toolkit@build-image-to-acr
+        with:
+          final_image_url: ${{ env.IMAGE_URL }}:${{ env.IMAGE_TAG }}
+
+      # 设置 ACK 集群上下文
+      - name: Set K8s context
+        uses: aliyun/ack-set-context@v1
+        with:
+          access-key-id: "${{ secrets.ALICLOUD_ACCESS_KEY_ID }}"
+          access-key-secret: "${{ secrets.ALICLOUD_ACCESS_KEY_SECRET }}"
+          cluster-id: "${{ secrets.ACK_CLUSTER_ID }}"
+
+      # 安装 Kustomize
+      - name: Set up Kustomize
+        uses: imranismail/setup-kustomize@v2
+
+      # 部署到 ACK
+      - name: Deploy to ACK
+        run: |
+          if [ -z "${CUSTOMER_NAME}" ] || [ -z "${PRODUCT_NAME}" ] || [ -z "${MODULE_NAME}" ] || [ -z "${DEPLOY_OVERLAY}" ]; then
+            echo "::error::GitHub Environment 缺少必需变量: CUSTOMER_NAME=${CUSTOMER_NAME}, PRODUCT_NAME=${PRODUCT_NAME}, MODULE_NAME=${MODULE_NAME}, DEPLOY_OVERLAY=${DEPLOY_OVERLAY}"
+            exit 1
+          fi
+
+          ENV_NAME="${ENV_NAME:-${DEPLOY_OVERLAY}}"
+          KUSTOMIZE_IMAGE_NAME="${KUSTOMIZE_IMAGE_NAME:-app-image}"
+          APP_PORT="${APP_PORT:-3001}"
+          SERVICE_PORT="${SERVICE_PORT:-${APP_PORT}}"
+          HEALTHCHECK_PATH="${HEALTHCHECK_PATH:-/status}"
+          STARTUP_PROBE_FAILURE_THRESHOLD="${STARTUP_PROBE_FAILURE_THRESHOLD:-30}"
+          REPLICA_COUNT="${REPLICA_COUNT:-1}"
+          REQUEST_CPU="${REQUEST_CPU:-200m}"
+          REQUEST_MEMORY="${REQUEST_MEMORY:-400Mi}"
+          LIMIT_CPU="${LIMIT_CPU:-300m}"
+          LIMIT_MEMORY="${LIMIT_MEMORY:-500Mi}"
+          HPA_MAX_REPLICAS="${HPA_MAX_REPLICAS:-2}"
+          HPA_CPU_UTILIZATION="${HPA_CPU_UTILIZATION:-85}"
+          HPA_MEMORY_UTILIZATION="${HPA_MEMORY_UTILIZATION:-90}"
+          HPA_SCALE_DOWN_STABILIZATION="${HPA_SCALE_DOWN_STABILIZATION:-120}"
+          PRODUCTION_REPLICA_COUNT="${PRODUCTION_REPLICA_COUNT:-2}"
+          PRODUCTION_REQUEST_CPU="${PRODUCTION_REQUEST_CPU:-500m}"
+          PRODUCTION_REQUEST_MEMORY="${PRODUCTION_REQUEST_MEMORY:-1Gi}"
+          PRODUCTION_LIMIT_CPU="${PRODUCTION_LIMIT_CPU:-1}"
+          PRODUCTION_LIMIT_MEMORY="${PRODUCTION_LIMIT_MEMORY:-2Gi}"
+          PRODUCTION_HPA_MIN_REPLICAS="${PRODUCTION_HPA_MIN_REPLICAS:-2}"
+          PRODUCTION_HPA_MAX_REPLICAS="${PRODUCTION_HPA_MAX_REPLICAS:-4}"
+          if [ "${ENV_NAME}" = "prod" ]; then
+            NODE_ENV="${NODE_ENV:-prd}"
+          else
+            NODE_ENV="${NODE_ENV:-non-prd}"
+          fi
+          APP_ENV="${ENV_NAME}"
+          case "${APP_ENV}" in
+            preview) APP_ENV="uat" ;;
+          esac
+          K8S_APP_NAME="${CUSTOMER_NAME}-${PRODUCT_NAME}-${MODULE_NAME}-${APP_ENV}"
+          NS_ENV="${ENV_NAME}"
+          case "${NS_ENV}" in
+            prod) NS_ENV="prd" ;;
+            preview) NS_ENV="uat" ;;
+          esac
+          K8S_NAMESPACE="${K8S_NAMESPACE:-${CUSTOMER_NAME}-${NS_ENV}}"
+          SERVICE_ACCOUNT_NAME="${SERVICE_ACCOUNT_NAME:-${CUSTOMER_NAME}-sa-${NS_ENV}}"
+          CONFIG_MAP_NAME="${CONFIG_MAP_NAME:-${K8S_APP_NAME}-config}"
+          ALIYUN_LOG_STDOUT_NAME="${ALIYUN_LOG_STDOUT_NAME:-aliyun_logs_${K8S_APP_NAME}-stdout}"
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.environment }}" ]; then
+            if [ "${{ inputs.environment }}" != "${DEPLOY_OVERLAY}" ] && [ "${{ inputs.environment }}" != "${ENV_NAME}" ]; then
+              echo "::error::workflow_dispatch 输入环境与当前 GitHub Environment 不一致: input=${{ inputs.environment }}, overlay=${DEPLOY_OVERLAY}, env_name=${ENV_NAME}"
+              exit 1
+            fi
+          fi
+
+          validate_k8s_name() {
+            local field_name="$1"
+            local field_value="$2"
+            if ! python - "${field_value}" <<'PY'
+          import re
+          import sys
+
+          value = sys.argv[1]
+          is_valid = bool(
+              re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", value)
+              and len(value) <= 63
+          )
+          sys.exit(0 if is_valid else 1)
+          PY
+            then
+              echo "::error::${field_name} 不符合 Kubernetes DNS-1123 规则: ${field_value}"
+              exit 1
+            fi
+          }
+
+          validate_k8s_name "CUSTOMER_NAME" "${CUSTOMER_NAME}"
+          validate_k8s_name "PRODUCT_NAME" "${PRODUCT_NAME}"
+          validate_k8s_name "MODULE_NAME" "${MODULE_NAME}"
+          validate_k8s_name "ENV_NAME" "${ENV_NAME}"
+          validate_k8s_name "K8S_APP_NAME" "${K8S_APP_NAME}"
+          validate_k8s_name "K8S_NAMESPACE" "${K8S_NAMESPACE}"
+          validate_k8s_name "SERVICE_ACCOUNT_NAME" "${SERVICE_ACCOUNT_NAME}"
+          validate_k8s_name "CONFIG_MAP_NAME" "${CONFIG_MAP_NAME}"
+
+          echo "DEPLOY_OVERLAY=${DEPLOY_OVERLAY}"
+          echo "ENV_NAME=${ENV_NAME}"
+          echo "K8S_NAMESPACE=${K8S_NAMESPACE}"
+          echo "K8S_APP_NAME=${K8S_APP_NAME}"
+          echo "SERVICE_ACCOUNT_NAME=${SERVICE_ACCOUNT_NAME}"
+          echo "CONFIG_MAP_NAME=${CONFIG_MAP_NAME}"
+          echo "KUSTOMIZE_IMAGE_NAME=${KUSTOMIZE_IMAGE_NAME}"
+          echo "APP_PORT=${APP_PORT}"
+          echo "SERVICE_PORT=${SERVICE_PORT}"
+          echo "HEALTHCHECK_PATH=${HEALTHCHECK_PATH}"
+
+          RUNTIME_DIR=$(mktemp -d)
+          trap 'rm -rf "${RUNTIME_DIR}"' EXIT
+          cp -R deploy "${RUNTIME_DIR}/deploy"
+
+          export DEPLOY_ROOT="${RUNTIME_DIR}/deploy"
+          export K8S_APP_NAME
+          export SERVICE_ACCOUNT_NAME
+          export CONFIG_MAP_NAME
+          export ALIYUN_LOG_STDOUT_NAME
+          export APP_PORT
+          export SERVICE_PORT
+          export HEALTHCHECK_PATH
+          export STARTUP_PROBE_FAILURE_THRESHOLD
+          export REPLICA_COUNT
+          export REQUEST_CPU
+          export REQUEST_MEMORY
+          export LIMIT_CPU
+          export LIMIT_MEMORY
+          export PRODUCTION_REPLICA_COUNT
+          export PRODUCTION_REQUEST_CPU
+          export PRODUCTION_REQUEST_MEMORY
+          export PRODUCTION_LIMIT_CPU
+          export PRODUCTION_LIMIT_MEMORY
+          export ENV_NAME
+          export NODE_ENV
+          export HPA_MAX_REPLICAS
+          export HPA_CPU_UTILIZATION
+          export HPA_MEMORY_UTILIZATION
+          export HPA_SCALE_DOWN_STABILIZATION
+          export PRODUCTION_HPA_MIN_REPLICAS
+          export PRODUCTION_HPA_MAX_REPLICAS
+
+          # 先替换 deploy 模板中的占位符，再用 kustomize 注入本次发布镜像。
+          python <<'PY'
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          deploy_root = Path(os.environ["DEPLOY_ROOT"])
+          replacements = {
+              "__APP_NAME__": os.environ["K8S_APP_NAME"],
+              "__SERVICE_ACCOUNT_NAME__": os.environ["SERVICE_ACCOUNT_NAME"],
+              "__CONFIG_MAP_NAME__": os.environ["CONFIG_MAP_NAME"],
+              "__ALIYUN_LOG_STDOUT_NAME__": os.environ["ALIYUN_LOG_STDOUT_NAME"],
+              "__APP_PORT__": os.environ["APP_PORT"],
+              "__SERVICE_PORT__": os.environ["SERVICE_PORT"],
+              "__HEALTHCHECK_PATH__": os.environ["HEALTHCHECK_PATH"],
+              "__STARTUP_PROBE_FAILURE_THRESHOLD__": os.environ["STARTUP_PROBE_FAILURE_THRESHOLD"],
+              "__REPLICA_COUNT__": os.environ["REPLICA_COUNT"],
+              "__REQUEST_CPU__": os.environ["REQUEST_CPU"],
+              "__REQUEST_MEMORY__": os.environ["REQUEST_MEMORY"],
+              "__LIMIT_CPU__": os.environ["LIMIT_CPU"],
+              "__LIMIT_MEMORY__": os.environ["LIMIT_MEMORY"],
+              "__PRODUCTION_REPLICA_COUNT__": os.environ["PRODUCTION_REPLICA_COUNT"],
+              "__PRODUCTION_REQUEST_CPU__": os.environ["PRODUCTION_REQUEST_CPU"],
+              "__PRODUCTION_REQUEST_MEMORY__": os.environ["PRODUCTION_REQUEST_MEMORY"],
+              "__PRODUCTION_LIMIT_CPU__": os.environ["PRODUCTION_LIMIT_CPU"],
+              "__PRODUCTION_LIMIT_MEMORY__": os.environ["PRODUCTION_LIMIT_MEMORY"],
+              "__ENV_NAME__": os.environ["ENV_NAME"],
+              "__NODE_ENV__": os.environ["NODE_ENV"],
+              "__HPA_MAX_REPLICAS__": os.environ["HPA_MAX_REPLICAS"],
+              "__HPA_CPU_UTILIZATION__": os.environ["HPA_CPU_UTILIZATION"],
+              "__HPA_MEMORY_UTILIZATION__": os.environ["HPA_MEMORY_UTILIZATION"],
+              "__HPA_SCALE_DOWN_STABILIZATION__": os.environ["HPA_SCALE_DOWN_STABILIZATION"],
+              "__PRODUCTION_HPA_MIN_REPLICAS__": os.environ["PRODUCTION_HPA_MIN_REPLICAS"],
+              "__PRODUCTION_HPA_MAX_REPLICAS__": os.environ["PRODUCTION_HPA_MAX_REPLICAS"],
+          }
+          unresolved = []
+          placeholder_pattern = re.compile(r"__([A-Z0-9_]+)__")
+
+          candidate_files = list(deploy_root.rglob("*.yaml")) + list(deploy_root.rglob("*.yml"))
+
+          for file_path in candidate_files:
+              content = file_path.read_text()
+              for placeholder, replacement in replacements.items():
+                  content = content.replace(placeholder, replacement)
+              file_path.write_text(content)
+              matches = sorted(set(placeholder_pattern.findall(content)))
+              if matches:
+                  unresolved.append((str(file_path), matches))
+
+          if unresolved:
+              for file_path, matches in unresolved:
+                  print(f"Unresolved placeholders in {file_path}: {', '.join(matches)}", file=sys.stderr)
+              sys.exit(1)
+          PY
+
+          cd "${RUNTIME_DIR}/deploy/overlays/${DEPLOY_OVERLAY}"
+          kustomize edit set image "${KUSTOMIZE_IMAGE_NAME}=${IMAGE_URL}:${IMAGE_TAG}"
+          kustomize build . | kubectl apply -f - -n "${K8S_NAMESPACE}"
+
+          # 回滚机制：如果 deployment 在 300 秒内 rollout 失败，则回退到上一版本，并输出当前 pod 状态。
+          if ! kubectl rollout status deployment/${K8S_APP_NAME} -n "${K8S_NAMESPACE}" --timeout=300s; then
+            echo "::error::Rollout failed, initiating rollback..."
+            kubectl rollout undo deployment/${K8S_APP_NAME} -n "${K8S_NAMESPACE}" || true
+            kubectl get pods -n "${K8S_NAMESPACE}" -l app="${K8S_APP_NAME}" -o wide
+            exit 1
+          fi
+
+          kubectl get services -n "${K8S_NAMESPACE}" -o wide
+
+      # 登出 ACR
+      - name: Log out from ACR
+        if: ${{ always() }}
+        run: docker logout ${{ secrets.ACR_REGISTRY }}
+
+      # 记录结束时间
+      - name: Record end time
+        if: ${{ always() }}
+        run: echo "END_TIME=$(date +%s)" >> $GITHUB_ENV
+
+      # 发送运行结果到 Lark
+      - name: Send Notification To Lark
+        if: ${{ always() }}
+        uses: taotaro/actions-toolkit@send-action-notification-to-lark
+        with:
+          webhook: ${{ secrets.LARK_BOT_WEBHOOK }}
+          icon: ${{ vars.LARK_NOTIFICATION_ICON }}
+          title: "Github Actions Automatic Deployment Job Build Result"
+          trigger: ${{ github.actor }}
+          project-name: ${{ vars.PROJECT_DISPLAY_NAME || 'Action Build Error' }}
+          start-time: ${{ env.START_TIME }}
+          end-time: ${{ env.END_TIME }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+          environment: ${{ vars.ENVIRONMENT }}
+          status: ${{ job.status }}
+          alert-members: ${{ vars.LARK_NOTIFICATION_ALERT_MEMBERS }}

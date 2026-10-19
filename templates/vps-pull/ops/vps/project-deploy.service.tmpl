@@ -1,0 +1,10 @@
+[Unit]
+Description=Pull and restart __INIT_APP_NAME__
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/__INIT_APP_NAME__
+ExecStart=/opt/__INIT_APP_NAME__/deploy-image.sh

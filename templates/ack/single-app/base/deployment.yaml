@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: __APP_NAME__
+  labels:
+    app: __APP_NAME__
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: __APP_NAME__
+  template:
+    metadata:
+      labels:
+        app: __APP_NAME__
+    spec:
+      serviceAccountName: __SERVICE_ACCOUNT_NAME__
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: env
+                operator: In
+                values:
+                - __NODE_ENV__
+      containers:
+      - name: app-container
+        image: app-image
+        ports:
+        - containerPort: __APP_PORT__
+        resources:
+          requests:
+            cpu: "__REQUEST_CPU__"
+            memory: "__REQUEST_MEMORY__"
+          limits:
+            cpu: "__LIMIT_CPU__"
+            memory: "__LIMIT_MEMORY__"
+        startupProbe:
+          httpGet:
+            path: __HEALTHCHECK_PATH__
+            port: __APP_PORT__
+          failureThreshold: __STARTUP_PROBE_FAILURE_THRESHOLD__
+          periodSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: __HEALTHCHECK_PATH__
+            port: __APP_PORT__
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: __HEALTHCHECK_PATH__
+            port: __APP_PORT__
+          periodSeconds: 20
+        envFrom:
+        - configMapRef:
+            name: __CONFIG_MAP_NAME__
+            optional: true
+        env:
+        - name: __ALIYUN_LOG_STDOUT_NAME__
+          value: "stdout"

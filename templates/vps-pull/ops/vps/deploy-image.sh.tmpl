@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_DIR="/opt/__INIT_APP_NAME__"
+LOCK_FILE="/var/lock/__INIT_APP_NAME__.deploy.lock"
+HEALTH_URL="http://127.0.0.1:__INIT_VPS_HOST_PORT____INIT_HEALTH_PATH__"
+
+exec 9>"$LOCK_FILE"
+flock -n 9 || exit 0
+
+cd "$APP_DIR"
+set -a
+. ./app.env
+set +a
+
+echo "[$(date -Is)] pulling $IMAGE_URL:$DEPLOY_CHANNEL"
+printf '%s' "$ACR_PASSWORD" | docker login "$ACR_REGISTRY" --username "$ACR_USERNAME" --password-stdin
+docker compose pull app
+docker compose up -d --remove-orphans
+
+for _ in $(seq 1 20); do
+  if curl --fail --silent --show-error "$HEALTH_URL" >/dev/null; then
+    echo "[$(date -Is)] health check passed"
+    exit 0
+  fi
+  sleep 3
+done
+
+echo "[$(date -Is)] health check failed; inspect docker compose logs app" >&2
+exit 1

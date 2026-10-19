@@ -1,0 +1,23 @@
+# __INIT_APP_NAME__ ACK Deployment
+
+## Generated contract
+
+- Container port: __INIT_APP_PORT__
+- Health path: __INIT_HEALTH_PATH__
+- Notification mode selected during initialization: __INIT_NOTIFICATION_MODE__
+
+The `deploy/` manifests keep `__PLACEHOLDER__` tokens and are rendered by the ACK
+workflow at deploy time. The startup command, container port and health path come
+from the Dockerfile and the application owner, never inferred from the Dockerfile.
+
+## Required GitHub Environment values
+
+Create one GitHub Environment for every release branch, for example development-env and main-env. Configure these names without storing values in Git. The full variable and secret matrix is in [deployment-secrets.md](./deployment-secrets.md).
+
+## External infrastructure
+
+Service, Ingress, DNS, namespace, ServiceAccount and the optional ConfigMap remain external DevOps responsibilities; the workflow applies only Deployment and HPA. The ConfigMap reference is rendered as `optional: true`, so a missing ConfigMap cannot leave Pods in CreateContainerConfigError.
+
+## Rollback behavior
+
+If `kubectl rollout status` fails within 300s, the workflow runs `kubectl rollout undo` on the Deployment and prints the affected Pods. It then reports the failure through the non-blocking Lark notification step.

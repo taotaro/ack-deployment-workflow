@@ -1,0 +1,10 @@
+[Unit]
+Description=Timer for __INIT_APP_NAME__ image updates
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,39 @@
+name: Build and Push Docker Image To ACR
+
+on:
+  push:
+    branches:
+__INIT_BRANCHES_YAML__
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name }}-env
+    env:
+      IMAGE_TAG: ${{ github.sha }}
+      CHANNEL_TAG: ${{ github.ref_name }}
+      IMAGE_URL: ${{ secrets.ACR_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/${{ secrets.ACR_REPOSITORY }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate ACR configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -n "${IMAGE_URL}" ] || { echo "::error::missing ACR image configuration"; exit 1; }
+          case "${IMAGE_URL}" in *-vpc.*) echo "::error::ACR VPC endpoint cannot be used from GitHub-hosted runners"; exit 1 ;; esac
+      - name: Login to ACR
+        uses: aliyun/acr-login@v1
+        with:
+          login-server: https://${{ secrets.ACR_REGISTRY }}
+          access-key-id: ${{ secrets.ALICLOUD_ACCESS_KEY_ID }}
+          access-key-secret: ${{ secrets.ALICLOUD_ACCESS_KEY_SECRET }}
+          region-id: ${{ secrets.ALICLOUD_REGION_ID }}
+          instance-id: ${{ secrets.ACR_INSTANCE_ID }}
+      - name: Build and push immutable image
+        uses: taotaro/actions-toolkit@build-image-to-acr
+        with:
+          final_image_url: ${{ env.IMAGE_URL }}:${{ env.IMAGE_TAG }}
+      - name: Update environment channel tag
+        shell: bash
+        run: docker buildx imagetools create -t "${IMAGE_URL}:${CHANNEL_TAG}" "${IMAGE_URL}:${IMAGE_TAG}"

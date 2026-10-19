@@ -1,0 +1,768 @@
+name: Deploy ACK
+'on':
+  workflow_call:
+    inputs:
+      profile:
+        type: string
+        required: true
+      github_environment:
+        type: string
+        required: true
+      region_id:
+        type: string
+        required: true
+      acr_registry:
+        type: string
+        required: true
+      acr_instance_id:
+        type: string
+        required: true
+      ack_cluster_id:
+        type: string
+        required: true
+      target_env:
+        type: string
+        default: ''
+      service:
+        type: string
+        default: ''
+      kind:
+        type: string
+        default: ''
+      dockerfile:
+        type: string
+        default: Dockerfile
+      app_port:
+        type: string
+        default: ''
+      service_port:
+        type: string
+        default: ''
+      config_file:
+        type: string
+        default: ''
+      overlay_root:
+        type: string
+        default: deploy/overlays
+      config_name_variable:
+        type: string
+        default: ''
+      app_name_prefix_default:
+        type: string
+        default: ''
+      acr_repository_prefix_default:
+        type: string
+        default: ''
+      selected_services:
+        type: string
+        default: ''
+      notification_project_fallback:
+        type: string
+        required: true
+      instance_code:
+        type: string
+        default: ''
+      project_name:
+        type: string
+        default: ''
+      business_module:
+        type: string
+        default: ''
+      environment:
+        type: string
+        default: ''
+      description:
+        type: string
+        default: ''
+      approval_time:
+        type: string
+        default: ''
+      release_type:
+        type: string
+        default: ''
+    secrets:
+      ALICLOUD_ACCESS_KEY_ID:
+        required: true
+      ALICLOUD_ACCESS_KEY_SECRET:
+        required: true
+      CI_ACCESS_TOKEN:
+        required: false
+      MONGODB_URI:
+        required: false
+      MONGODB_DB:
+        required: false
+      LARK_BOT_WEBHOOK:
+        required: false
+permissions:
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.github_environment }}
+    timeout-minutes: ${{ inputs.profile == 'service' && 45 || 360 }}
+    steps:
+    - name: Checkout caller source
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.sha }}
+        fetch-depth: 0
+        persist-credentials: false
+    - name: Validate workflow inputs
+      env:
+        ALICLOUD_ACCESS_KEY_ID: ${{ secrets.ALICLOUD_ACCESS_KEY_ID }}
+        ALICLOUD_ACCESS_KEY_SECRET: ${{ secrets.ALICLOUD_ACCESS_KEY_SECRET }}
+      run: |
+        python3 - <<'PY'
+        import os, re
+        from pathlib import Path
+        v = lambda key: os.environ.get('INPUT_' + key.upper(), '')
+        def require(ok, name):
+            if not ok:
+                raise SystemExit('Invalid or missing workflow value: ' + name)
+        for key in ('profile', 'github_environment', 'region_id', 'acr_registry', 'acr_instance_id', 'ack_cluster_id', 'notification_project_fallback'):
+            require(bool(v(key)), key)
+        for key in ('ALICLOUD_ACCESS_KEY_ID', 'ALICLOUD_ACCESS_KEY_SECRET'):
+            require(bool(os.environ.get(key)), key)
+        require(v('profile') in ('single-app', 'service'), 'profile')
+        require(bool(re.fullmatch(r'[A-Za-z0-9.-]+(?::[0-9]+)?', v('acr_registry'))), 'acr_registry')
+        root = Path.cwd().resolve()
+        def path(value, name, file=False):
+            p = Path(value)
+            require(bool(value) and not p.is_absolute() and '..' not in p.parts, name)
+            p = (root / p).resolve()
+            require(p.is_relative_to(root) and (p.is_file() if file else p.is_dir()), name)
+        if v('profile') == 'service':
+            require(v('target_env') in ('dev','sit','uat','production'), 'target_env')
+            require(v('github_environment') == v('target_env') + '-env', 'github_environment')
+            require(bool(re.fullmatch(r'[a-z0-9]([-a-z0-9]*[a-z0-9])?', v('service'))) and len(v('service')) <= 63, 'service')
+            require(v('kind') in ('rest_api','worker'), 'kind')
+            for key in ('config_file','app_name_prefix_default','acr_repository_prefix_default'):
+                require(bool(v(key)), key)
+            require(bool(re.fullmatch(r'[A-Z_][A-Z0-9_]*', v('config_name_variable'))), 'config_name_variable')
+            require(bool(re.fullmatch(r'[A-Za-z0-9_.-]+', v('config_file'))), 'config_file')
+            path(v('dockerfile'), 'dockerfile', True)
+            overlay = os.environ.get('DEPLOY_OVERLAY') or v('target_env')
+            path(v('overlay_root') + '/' + overlay, 'overlay')
+            if v('kind') == 'worker':
+                require(not v('app_port') and not v('service_port') and v('config_file') == 'task.yaml', 'worker metadata')
+            else:
+                for key in ('app_port','service_port'):
+                    require(v(key).isdigit() and 1 <= int(v(key)) <= 65535, key)
+        else:
+            require(v('github_environment') == os.environ['REF_NAME'] + '-env', 'github_environment')
+            for key in ('service','kind','config_file','config_name_variable','app_name_prefix_default','acr_repository_prefix_default'):
+                require(not v(key), key)
+            require(v('dockerfile') == 'Dockerfile', 'dockerfile')
+            path('Dockerfile', 'dockerfile', True)
+            path('deploy/overlays/' + os.environ.get('DEPLOY_OVERLAY', ''), 'overlay')
+            require(bool(os.environ.get('ACR_NAMESPACE')) and bool(os.environ.get('ACR_REPOSITORY')), 'image path')
+        PY
+    - name: Record start time
+      id: record_start_time
+      run: |
+        echo "value=$(date +%s)" >> "$GITHUB_OUTPUT"
+        echo "START_TIME=$(date +%s)" >> "$GITHUB_ENV"
+    - name: Resolve single application
+      if: ${{ inputs.profile == 'single-app' }}
+      run: |
+        if [ -z "${CUSTOMER_NAME}" ] || [ -z "${PRODUCT_NAME}" ] || [ -z "${MODULE_NAME}" ] || [ -z "${DEPLOY_OVERLAY}" ]; then
+          echo "::error::GitHub Environment 缺少必需变量: CUSTOMER_NAME=${CUSTOMER_NAME}, PRODUCT_NAME=${PRODUCT_NAME}, MODULE_NAME=${MODULE_NAME}, DEPLOY_OVERLAY=${DEPLOY_OVERLAY}"
+          exit 1
+        fi
+
+        ENV_NAME="${ENV_NAME:-${DEPLOY_OVERLAY}}"
+        KUSTOMIZE_IMAGE_NAME="${KUSTOMIZE_IMAGE_NAME:-app-image}"
+        APP_PORT="${APP_PORT:-8000}"
+        SERVICE_PORT="${SERVICE_PORT:-8000}"
+        HEALTHCHECK_PATH="${HEALTHCHECK_PATH:-/status}"
+        STARTUP_PROBE_FAILURE_THRESHOLD="${STARTUP_PROBE_FAILURE_THRESHOLD:-30}"
+        REPLICA_COUNT="${REPLICA_COUNT:-1}"
+        REQUEST_CPU="${REQUEST_CPU:-200m}"
+        REQUEST_MEMORY="${REQUEST_MEMORY:-400Mi}"
+        LIMIT_CPU="${LIMIT_CPU:-300m}"
+        LIMIT_MEMORY="${LIMIT_MEMORY:-500Mi}"
+        HPA_MAX_REPLICAS="${HPA_MAX_REPLICAS:-2}"
+        HPA_CPU_UTILIZATION="${HPA_CPU_UTILIZATION:-85}"
+        HPA_MEMORY_UTILIZATION="${HPA_MEMORY_UTILIZATION:-90}"
+        HPA_SCALE_DOWN_STABILIZATION="${HPA_SCALE_DOWN_STABILIZATION:-120}"
+        PRODUCTION_REPLICA_COUNT="${PRODUCTION_REPLICA_COUNT:-2}"
+        PRODUCTION_REQUEST_CPU="${PRODUCTION_REQUEST_CPU:-500m}"
+        PRODUCTION_REQUEST_MEMORY="${PRODUCTION_REQUEST_MEMORY:-1Gi}"
+        PRODUCTION_LIMIT_CPU="${PRODUCTION_LIMIT_CPU:-1}"
+        PRODUCTION_LIMIT_MEMORY="${PRODUCTION_LIMIT_MEMORY:-2Gi}"
+        PRODUCTION_HPA_MIN_REPLICAS="${PRODUCTION_HPA_MIN_REPLICAS:-2}"
+        PRODUCTION_HPA_MAX_REPLICAS="${PRODUCTION_HPA_MAX_REPLICAS:-4}"
+        if [ "${ENV_NAME}" = "prod" ]; then
+          NODE_ENV="${NODE_ENV:-prd}"
+        else
+          NODE_ENV="${NODE_ENV:-non-prd}"
+        fi
+        APP_ENV="${ENV_NAME}"
+        case "${APP_ENV}" in
+          preview) APP_ENV="uat" ;;
+        esac
+        K8S_APP_NAME="${CUSTOMER_NAME}-${PRODUCT_NAME}-${MODULE_NAME}-${APP_ENV}"
+        NS_ENV="${ENV_NAME}"
+        case "${NS_ENV}" in
+          prod) NS_ENV="prd" ;;
+          preview) NS_ENV="uat" ;;
+        esac
+        K8S_NAMESPACE="${K8S_NAMESPACE:-${CUSTOMER_NAME}-${NS_ENV}}"
+        SERVICE_ACCOUNT_NAME="${SERVICE_ACCOUNT_NAME:-${CUSTOMER_NAME}-sa-${NS_ENV}}"
+        CONFIG_MAP_NAME="${CONFIG_MAP_NAME:-${K8S_APP_NAME}-config}"
+        ALIYUN_LOG_STDOUT_NAME="${ALIYUN_LOG_STDOUT_NAME:-aliyun_logs_${K8S_APP_NAME}-stdout}"
+
+        if [ "${EVENT_NAME}" = "workflow_dispatch" ] && [ -n "${RELEASE_ENVIRONMENT}" ]; then
+          INPUT_ENV="${RELEASE_ENVIRONMENT}"
+          [ "${INPUT_ENV}" = "prd" ] && INPUT_ENV="prod"
+          if [ "${INPUT_ENV}" != "${DEPLOY_OVERLAY}" ] && [ "${INPUT_ENV}" != "${ENV_NAME}" ]; then
+            echo "::error::workflow_dispatch 输入环境与当前 GitHub Environment 不一致: input=${RELEASE_ENVIRONMENT}, normalized=${INPUT_ENV}, overlay=${DEPLOY_OVERLAY}, env_name=${ENV_NAME}"
+            exit 1
+          fi
+        fi
+
+        validate_k8s_name() {
+          local field_name="$1"
+          local field_value="$2"
+          if ! python - "${field_value}" <<'PY'
+        import re
+        import sys
+
+        value = sys.argv[1]
+        is_valid = bool(
+            re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", value)
+            and len(value) <= 63
+        )
+        sys.exit(0 if is_valid else 1)
+        PY
+          then
+            echo "::error::${field_name} 不符合 Kubernetes DNS-1123 规则: ${field_value}"
+            exit 1
+          fi
+        }
+
+        validate_k8s_name "CUSTOMER_NAME" "${CUSTOMER_NAME}"
+        validate_k8s_name "PRODUCT_NAME" "${PRODUCT_NAME}"
+        validate_k8s_name "MODULE_NAME" "${MODULE_NAME}"
+        validate_k8s_name "ENV_NAME" "${ENV_NAME}"
+        validate_k8s_name "K8S_APP_NAME" "${K8S_APP_NAME}"
+        validate_k8s_name "K8S_NAMESPACE" "${K8S_NAMESPACE}"
+        validate_k8s_name "SERVICE_ACCOUNT_NAME" "${SERVICE_ACCOUNT_NAME}"
+        validate_k8s_name "CONFIG_MAP_NAME" "${CONFIG_MAP_NAME}"
+
+        echo "DEPLOY_OVERLAY=${DEPLOY_OVERLAY}"
+        echo "ENV_NAME=${ENV_NAME}"
+        echo "K8S_NAMESPACE=${K8S_NAMESPACE}"
+        echo "K8S_APP_NAME=${K8S_APP_NAME}"
+        echo "SERVICE_ACCOUNT_NAME=${SERVICE_ACCOUNT_NAME}"
+        echo "CONFIG_MAP_NAME=${CONFIG_MAP_NAME}"
+        echo "KUSTOMIZE_IMAGE_NAME=${KUSTOMIZE_IMAGE_NAME}"
+        echo "APP_PORT=${APP_PORT}"
+        echo "SERVICE_PORT=${SERVICE_PORT}"
+        echo "HEALTHCHECK_PATH=${HEALTHCHECK_PATH}"
+
+
+        printf 'RESOLVED_CONFIG_NAME=%s\n' "$CONFIG_MAP_NAME" >> "$GITHUB_ENV"
+
+        for name in K8S_APP_NAME SERVICE_ACCOUNT_NAME ALIYUN_LOG_STDOUT_NAME APP_PORT SERVICE_PORT HEALTHCHECK_PATH STARTUP_PROBE_FAILURE_THRESHOLD REPLICA_COUNT REQUEST_CPU REQUEST_MEMORY LIMIT_CPU LIMIT_MEMORY PRODUCTION_REPLICA_COUNT PRODUCTION_REQUEST_CPU PRODUCTION_REQUEST_MEMORY PRODUCTION_LIMIT_CPU PRODUCTION_LIMIT_MEMORY ENV_NAME NODE_ENV HPA_MAX_REPLICAS HPA_CPU_UTILIZATION HPA_MEMORY_UTILIZATION HPA_SCALE_DOWN_STABILIZATION PRODUCTION_HPA_MIN_REPLICAS PRODUCTION_HPA_MAX_REPLICAS K8S_NAMESPACE KUSTOMIZE_IMAGE_NAME DEPLOY_OVERLAY APP_ENV; do
+          printf '%s=%s\n' "$name" "${!name}" >> "$GITHUB_ENV"
+        done
+    - name: Resolve service configuration
+      if: ${{ inputs.profile == 'service' }}
+      run: |
+        apply_resource_profile() {
+          if [ "${SERVICE_KIND}" = "rest_api" ]; then
+            if [ "${TARGET_ENV}" = "production" ]; then
+              REPLICA_COUNT="${PRODUCTION_REST_API_REPLICA_COUNT:-2}"
+              REQUEST_CPU="${PRODUCTION_REST_API_REQUEST_CPU:-500m}"
+              REQUEST_MEMORY="${PRODUCTION_REST_API_REQUEST_MEMORY:-1Gi}"
+              LIMIT_CPU="${PRODUCTION_REST_API_LIMIT_CPU:-1}"
+              LIMIT_MEMORY="${PRODUCTION_REST_API_LIMIT_MEMORY:-2Gi}"
+              HPA_MIN="${PRODUCTION_HPA_MIN_REPLICAS:-2}"
+              HPA_MAX="${PRODUCTION_HPA_MAX_REPLICAS:-4}"
+            else
+              REPLICA_COUNT="${REST_API_REPLICA_COUNT:-1}"
+              REQUEST_CPU="${REST_API_REQUEST_CPU:-200m}"
+              REQUEST_MEMORY="${REST_API_REQUEST_MEMORY:-400Mi}"
+              LIMIT_CPU="${REST_API_LIMIT_CPU:-500m}"
+              LIMIT_MEMORY="${REST_API_LIMIT_MEMORY:-600Mi}"
+              HPA_MIN="${HPA_MIN_REPLICAS:-1}"
+              HPA_MAX="${HPA_MAX_REPLICAS:-2}"
+            fi
+          else
+            if [ "${TARGET_ENV}" = "production" ]; then
+              REPLICA_COUNT="${PRODUCTION_WORKER_REPLICA_COUNT:-1}"
+              REQUEST_CPU="${PRODUCTION_WORKER_REQUEST_CPU:-300m}"
+              REQUEST_MEMORY="${PRODUCTION_WORKER_REQUEST_MEMORY:-512Mi}"
+              LIMIT_CPU="${PRODUCTION_WORKER_LIMIT_CPU:-1}"
+              LIMIT_MEMORY="${PRODUCTION_WORKER_LIMIT_MEMORY:-1Gi}"
+            else
+              REPLICA_COUNT="${WORKER_REPLICA_COUNT:-1}"
+              REQUEST_CPU="${WORKER_REQUEST_CPU:-100m}"
+              REQUEST_MEMORY="${WORKER_REQUEST_MEMORY:-256Mi}"
+              LIMIT_CPU="${WORKER_LIMIT_CPU:-300m}"
+              LIMIT_MEMORY="${WORKER_LIMIT_MEMORY:-512Mi}"
+            fi
+            HPA_MIN="${REPLICA_COUNT}"
+            HPA_MAX="${REPLICA_COUNT}"
+          fi
+        }
+
+        # 根据当前环境和服务名统一推导镜像名、应用名、配置 secret 名、overlay 路径
+        # 以及运行所需资源规格，避免为每个服务写独立 workflow。
+        SERVICE_NAME="$INPUT_SERVICE"
+        APP_NAME_PREFIX="${APP_NAME_PREFIX:-$INPUT_APP_NAME_PREFIX_DEFAULT}"
+        APP_NAME_ENV="${APP_NAME_ENV:-${TARGET_ENV}}"
+        DEPLOY_OVERLAY="${DEPLOY_OVERLAY:-${TARGET_ENV}}"
+        ACR_REPOSITORY_PREFIX="${ACR_REPOSITORY_PREFIX:-$INPUT_ACR_REPOSITORY_PREFIX_DEFAULT}"
+        ACR_REPOSITORY_ENV="${ACR_REPOSITORY_ENV:-${TARGET_ENV}}"
+        OVERLAY_ROOT="$INPUT_OVERLAY_ROOT"
+        DOCKERFILE="$INPUT_DOCKERFILE"
+        CONFIG_FILE_NAME="$INPUT_CONFIG_FILE"
+        SERVICE_KIND="$INPUT_KIND"
+        APP_PORT="$INPUT_APP_PORT"
+        SERVICE_PORT="$INPUT_SERVICE_PORT"
+        CONFIG_SECRET_VAR_NAME="$INPUT_CONFIG_NAME_VARIABLE"
+        DEFAULT_CONFIG_SECRET_NAME="${APP_NAME_PREFIX}-${TARGET_ENV}-${SERVICE_NAME}-config"
+        CONFIG_SECRET_NAME="${!CONFIG_SECRET_VAR_NAME:-${DEFAULT_CONFIG_SECRET_NAME}}"
+
+        require_non_empty() {
+          local field_name="$1"
+          local field_value="$2"
+          if [ -z "${field_value}" ]; then
+            echo "::error::Required workflow value is empty: ${field_name}. Check the selected GitHub Environment secrets/vars."
+            exit 1
+          fi
+        }
+
+
+        require_non_empty "ACR_REGISTRY" "${ACR_REGISTRY}"
+        require_non_empty "ACR_NAMESPACE" "${ACR_NAMESPACE}"
+
+        APP_ENV="${TARGET_ENV}"
+        NODE_ENV="non-prd"
+        if [ "${TARGET_ENV}" = "production" ]; then
+          NODE_ENV="prd"
+        fi
+
+        IMAGE_REPOSITORY="${ACR_REPOSITORY_PREFIX}-${ACR_REPOSITORY_ENV}-${SERVICE_NAME}"
+        IMAGE_URL="${ACR_REGISTRY}/${ACR_NAMESPACE}/${IMAGE_REPOSITORY}"
+        if [[ "${ACR_REGISTRY}" == http://* || "${ACR_REGISTRY}" == https://* ]]; then
+          echo "::error::ACR_REGISTRY should be registry host only, without protocol: ${ACR_REGISTRY}"
+          exit 1
+        fi
+        if [[ "${IMAGE_URL}" == /* ]]; then
+          echo "::error::Computed IMAGE_URL is invalid: ${IMAGE_URL}. ACR_REGISTRY is likely empty."
+          exit 1
+        fi
+        APP_NAME="${APP_NAME_PREFIX}-${APP_NAME_ENV}-${SERVICE_NAME}"
+        K8S_NAMESPACE="${K8S_NAMESPACE:-${APP_NAME_PREFIX}-${TARGET_ENV}}"
+        SERVICE_ACCOUNT_NAME="${SERVICE_ACCOUNT_NAME:-default}"
+        STARTUP_PROBE_FAILURE_THRESHOLD=30
+
+        apply_resource_profile
+
+        validate_dns_name() {
+          local field_name="$1"
+          local field_value="$2"
+          if ! python3 -c 'import re, sys; value = sys.argv[1]; ok = bool(re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", value) and len(value) <= 63); sys.exit(0 if ok else 1)' "${field_value}"
+          then
+            echo "::error::${field_name} is not a valid DNS-1123 name: ${field_value}"
+            exit 1
+          fi
+        }
+
+        for field_name in APP_NAME K8S_NAMESPACE SERVICE_ACCOUNT_NAME CONFIG_SECRET_NAME; do
+          field_value="${!field_name}"
+          validate_dns_name "${field_name}" "${field_value}"
+        done
+
+        export HPA_MIN_REPLICAS="${HPA_MIN}"
+        export HPA_MAX_REPLICAS="${HPA_MAX}"
+
+        for name in \
+          SERVICE_NAME \
+          SERVICE_KIND \
+          DOCKERFILE \
+          DEPLOY_OVERLAY \
+          OVERLAY_ROOT \
+          APP_NAME \
+          APP_ENV \
+          NODE_ENV \
+          APP_PORT \
+          SERVICE_PORT \
+          CONFIG_FILE_NAME \
+          K8S_NAMESPACE \
+          SERVICE_ACCOUNT_NAME \
+          CONFIG_SECRET_NAME \
+          IMAGE_URL \
+          REPLICA_COUNT \
+          REQUEST_CPU \
+          REQUEST_MEMORY \
+          LIMIT_CPU \
+          LIMIT_MEMORY \
+          HPA_MIN_REPLICAS \
+          HPA_MAX_REPLICAS \
+          STARTUP_PROBE_FAILURE_THRESHOLD
+        do
+          printf '%s=%s\n' "${name}" "${!name}" >> "${GITHUB_ENV}"
+        done
+    - name: Print all received inputs and variables
+      run: "if [ \"${EVENT_NAME}\" = \"workflow_dispatch\" ]; then\n  echo \"=== 输入变量 ===\"\n  echo \"IMAGE_TAG: ${IMAGE_TAG}\"\
+        \n  echo \"IMAGE_URL: ${IMAGE_URL}\"\n  \n  echo \"=== 输入参数 ===\"\n  echo \"lark审批实例: ${RELEASE_INSTANCE_CODE}\"\n\
+        \  echo \"项目名称: ${RELEASE_PROJECT_NAME}\"\n  echo \"发布类型: ${RELEASE_RELEASE_TYPE}\"\n  echo \"业务模块: ${RELEASE_BUSINESS_MODULE}\"\
+        \n  echo \"部署环境: ${RELEASE_ENVIRONMENT}\"\n  echo \"描述说明: ${RELEASE_DESCRIPTION}\"\n  echo \"lark审批时间: ${RELEASE_APPROVAL_TIME}\"\
+        \nfi\n\necho \"\"\necho \"=== 仓库信息 ===\"\necho \"仓库: ${REPOSITORY}\"\necho \"分支名称: ${REF_NAME}\"\necho \"运行ID: ${RUN_ID}\"\
+        \necho \"触发者: ${ACTOR}\"\n"
+      if: ${{ inputs.profile == 'single-app' }}
+    - name: Print deployment context
+      run: |
+        echo "Repository: ${REPOSITORY}"
+        echo "Ref: ${REF_NAME}"
+        echo "Run ID: ${RUN_ID}"
+        echo "Actor: ${ACTOR}"
+        echo "Target environment: ${TARGET_ENV}"
+        echo "Service: ${SERVICE_NAME}"
+        echo "Dockerfile: ${DOCKERFILE}"
+        echo "Overlay: ${DEPLOY_OVERLAY}"
+        echo "Overlay root: ${OVERLAY_ROOT}"
+        echo "App name: ${APP_NAME}"
+        echo "Image: ${IMAGE_URL}:${IMAGE_TAG}"
+        echo "Namespace: ${K8S_NAMESPACE}"
+        echo "Selected services: ${SELECTED_SERVICES}"
+        echo "Lark instance code: ${RELEASE_INSTANCE_CODE}"
+        echo "Project name: ${RELEASE_PROJECT_NAME}"
+        echo "Business module: ${RELEASE_BUSINESS_MODULE}"
+        echo "Release type: ${RELEASE_RELEASE_TYPE}"
+        echo "Approval time: ${RELEASE_APPROVAL_TIME}"
+        echo "Description: ${RELEASE_DESCRIPTION}"
+      if: ${{ inputs.profile == 'service' }}
+    - name: Set timezone to Asia/Shanghai
+      run: sudo timedatectl set-timezone Asia/Shanghai && date
+    - name: Login to ACR
+      uses: aliyun/acr-login@v1
+      with:
+        login-server: https://${{ inputs.acr_registry }}
+        access-key-id: ${{ secrets.ALICLOUD_ACCESS_KEY_ID }}
+        access-key-secret: ${{ secrets.ALICLOUD_ACCESS_KEY_SECRET }}
+        region-id: ${{ inputs.region_id }}
+        instance-id: ${{ inputs.acr_instance_id }}
+    - name: Load build arguments
+      if: ${{ inputs.profile == 'single-app' && vars.BUILD_ARGS != '' }}
+      env:
+        BUILD_ARGS_JSON: ${{ vars.BUILD_ARGS }}
+      run: echo "${BUILD_ARGS_JSON}" | jq -r 'to_entries[] | "CONFIG_MAP_\(.key)=\(.value)"' >> "$GITHUB_ENV"
+    - name: Load build secrets
+      run: |
+        [ -n "$CI_ACCESS_TOKEN" ] && echo "CONFIG_MAP_CI_ACCESS_TOKEN=${CI_ACCESS_TOKEN}" >> "$GITHUB_ENV" || :
+        [ -n "$MONGODB_URI" ] && echo "CONFIG_MAP_MONGODB_URI=${MONGODB_URI}" >> "$GITHUB_ENV" || :
+        [ -n "$MONGODB_DB" ] && echo "CONFIG_MAP_MONGODB_DB=${MONGODB_DB}" >> "$GITHUB_ENV" || :
+      env:
+        CI_ACCESS_TOKEN: ${{ secrets.CI_ACCESS_TOKEN }}
+        MONGODB_URI: ${{ secrets.MONGODB_URI }}
+        MONGODB_DB: ${{ secrets.MONGODB_DB }}
+      if: ${{ inputs.profile == 'single-app' }}
+    - name: Set up single-app Buildx
+      if: ${{ inputs.profile == 'single-app' }}
+      uses: docker/setup-buildx-action@v3.6.1
+      with:
+        driver: docker-container
+        install: true
+    - name: Build single application
+      if: ${{ inputs.profile == 'single-app' }}
+      run: |
+        DOCKER_BUILD_ARGS=()
+        for var in $(env | grep '^CONFIG_MAP_' | cut -d= -f1); do
+            value=$(printenv "$var")
+            if [ -n "$value" ]; then
+                stripped_var_name="${var#CONFIG_MAP_}"
+                DOCKER_BUILD_ARGS+=(--build-arg "$stripped_var_name=$value")
+                echo "Added build argument: --build-arg $stripped_var_name=$value"
+            fi
+        done
+        docker buildx build --platform linux/amd64 "${DOCKER_BUILD_ARGS[@]}" -t "$IMAGE_URL:$IMAGE_TAG" -f ./Dockerfile --push .
+        echo "Docker build completed and image pushed."
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      if: ${{ inputs.profile == 'service' }}
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: ./${{ env.DOCKERFILE }}
+        push: 'true'
+        pull: 'true'
+        provenance: 'false'
+        tags: ${{ env.IMAGE_URL }}:${{ env.IMAGE_TAG }}
+        cache-from: type=gha,scope=${{ inputs.service }}
+        cache-to: type=gha,mode=max,scope=${{ inputs.service }}
+      if: ${{ inputs.profile == 'service' }}
+    - name: Set K8s context
+      uses: aliyun/ack-set-context@v1
+      with:
+        access-key-id: ${{ secrets.ALICLOUD_ACCESS_KEY_ID }}
+        access-key-secret: ${{ secrets.ALICLOUD_ACCESS_KEY_SECRET }}
+        cluster-id: ${{ inputs.ack_cluster_id }}
+    - name: Set up Kustomize
+      uses: imranismail/setup-kustomize@v2
+    - name: Render and deploy manifests
+      run: |
+        RUNTIME_DIR="$(mktemp -d)"
+        trap 'rm -rf "${RUNTIME_DIR}"' EXIT
+        STAGED_ROOT="${RUNTIME_DIR}"
+        if [ "$PROFILE" = service ]; then
+          # Localize the selected overlay and its in-checkout dependencies without
+          # rendering yet: numeric fields may still contain runtime placeholders.
+          STAGED_ROOT="${RUNTIME_DIR}/source"
+          kustomize localize "${OVERLAY_ROOT}/${DEPLOY_OVERLAY}" "$STAGED_ROOT" --scope "$PWD" --no-verify
+          # Preserve the existing full deploy/ validation surface and relative paths.
+          case "$OVERLAY_ROOT" in deploy/*) cp -R deploy "${STAGED_ROOT}/" ;; esac
+          export DEPLOY_ROOT="$STAGED_ROOT"
+        else
+          cp -R deploy "${RUNTIME_DIR}/deploy"
+          export DEPLOY_ROOT="${RUNTIME_DIR}/deploy"
+        fi
+        if [ "$PROFILE" = service ]; then
+        export HPA_CPU_UTILIZATION="${HPA_CPU_UTILIZATION:-85}"
+        export HPA_MEMORY_UTILIZATION="${HPA_MEMORY_UTILIZATION:-90}"
+        export HPA_SCALE_DOWN_STABILIZATION="${HPA_SCALE_DOWN_STABILIZATION:-120}"
+        export PRODUCTION_REQUEST_CPU="${PRODUCTION_REST_API_REQUEST_CPU:-500m}"
+        export PRODUCTION_REQUEST_MEMORY="${PRODUCTION_REST_API_REQUEST_MEMORY:-1Gi}"
+        export PRODUCTION_LIMIT_CPU="${PRODUCTION_REST_API_LIMIT_CPU:-1}"
+        export PRODUCTION_LIMIT_MEMORY="${PRODUCTION_REST_API_LIMIT_MEMORY:-2Gi}"
+        export PRODUCTION_HPA_MIN_REPLICAS="${PRODUCTION_HPA_MIN_REPLICAS:-2}"
+        export PRODUCTION_HPA_MAX_REPLICAS="${PRODUCTION_HPA_MAX_REPLICAS:-4}"
+        export ENV_NAME="${TARGET_ENV}"
+
+        else
+          APP_NAME="$K8S_APP_NAME"
+          export CONFIG_MAP_NAME="${CONFIG_MAP_NAME:-$RESOLVED_CONFIG_NAME}"
+          OVERLAY_ROOT=deploy/overlays
+        fi
+        python3 <<'PY'
+        import os, re, sys
+        from pathlib import Path
+        deploy_root = Path(os.environ["DEPLOY_ROOT"])
+        if os.environ["PROFILE"] == "single-app":
+            replacements = {
+                "__APP_NAME__": os.environ["K8S_APP_NAME"],
+                "__SERVICE_ACCOUNT_NAME__": os.environ["SERVICE_ACCOUNT_NAME"],
+                "__CONFIG_MAP_NAME__": os.environ["CONFIG_MAP_NAME"],
+                "__ALIYUN_LOG_STDOUT_NAME__": os.environ["ALIYUN_LOG_STDOUT_NAME"],
+                "__APP_PORT__": os.environ["APP_PORT"],
+                "__SERVICE_PORT__": os.environ["SERVICE_PORT"],
+                "__HEALTHCHECK_PATH__": os.environ["HEALTHCHECK_PATH"],
+                "__STARTUP_PROBE_FAILURE_THRESHOLD__": os.environ["STARTUP_PROBE_FAILURE_THRESHOLD"],
+                "__REPLICA_COUNT__": os.environ["REPLICA_COUNT"],
+                "__REQUEST_CPU__": os.environ["REQUEST_CPU"],
+                "__REQUEST_MEMORY__": os.environ["REQUEST_MEMORY"],
+                "__LIMIT_CPU__": os.environ["LIMIT_CPU"],
+                "__LIMIT_MEMORY__": os.environ["LIMIT_MEMORY"],
+                "__PRODUCTION_REPLICA_COUNT__": os.environ["PRODUCTION_REPLICA_COUNT"],
+                "__PRODUCTION_REQUEST_CPU__": os.environ["PRODUCTION_REQUEST_CPU"],
+                "__PRODUCTION_REQUEST_MEMORY__": os.environ["PRODUCTION_REQUEST_MEMORY"],
+                "__PRODUCTION_LIMIT_CPU__": os.environ["PRODUCTION_LIMIT_CPU"],
+                "__PRODUCTION_LIMIT_MEMORY__": os.environ["PRODUCTION_LIMIT_MEMORY"],
+                "__ENV_NAME__": os.environ["ENV_NAME"],
+                "__NODE_ENV__": os.environ["NODE_ENV"],
+                "__HPA_MAX_REPLICAS__": os.environ["HPA_MAX_REPLICAS"],
+                "__HPA_CPU_UTILIZATION__": os.environ["HPA_CPU_UTILIZATION"],
+                "__HPA_MEMORY_UTILIZATION__": os.environ["HPA_MEMORY_UTILIZATION"],
+                "__HPA_SCALE_DOWN_STABILIZATION__": os.environ["HPA_SCALE_DOWN_STABILIZATION"],
+                "__PRODUCTION_HPA_MIN_REPLICAS__": os.environ["PRODUCTION_HPA_MIN_REPLICAS"],
+                "__PRODUCTION_HPA_MAX_REPLICAS__": os.environ["PRODUCTION_HPA_MAX_REPLICAS"],
+            }
+        else:
+            replacements = {
+                "__APP_NAME__": os.environ["APP_NAME"],
+                "__SERVICE_NAME__": os.environ["SERVICE_NAME"],
+                "__K8S_NAMESPACE__": os.environ["K8S_NAMESPACE"],
+                "__SERVICE_ACCOUNT_NAME__": os.environ["SERVICE_ACCOUNT_NAME"],
+                "__CONFIG_SECRET_NAME__": os.environ["CONFIG_SECRET_NAME"],
+                "__CONFIG_FILE_NAME__": os.environ["CONFIG_FILE_NAME"],
+                "__ENV_NAME__": os.environ["ENV_NAME"],
+                "__APP_ENV__": os.environ["APP_ENV"],
+                "__NODE_ENV__": os.environ["NODE_ENV"],
+                "__APP_PORT__": os.environ.get("APP_PORT", ""),
+                "__SERVICE_PORT__": os.environ.get("SERVICE_PORT", ""),
+                "__REPLICA_COUNT__": os.environ["REPLICA_COUNT"],
+                "__REQUEST_CPU__": os.environ["REQUEST_CPU"],
+                "__REQUEST_MEMORY__": os.environ["REQUEST_MEMORY"],
+                "__LIMIT_CPU__": os.environ["LIMIT_CPU"],
+                "__LIMIT_MEMORY__": os.environ["LIMIT_MEMORY"],
+                "__HPA_MIN_REPLICAS__": os.environ["HPA_MIN_REPLICAS"],
+                "__HPA_MAX_REPLICAS__": os.environ["HPA_MAX_REPLICAS"],
+                "__HPA_CPU_UTILIZATION__": os.environ["HPA_CPU_UTILIZATION"],
+                "__HPA_MEMORY_UTILIZATION__": os.environ["HPA_MEMORY_UTILIZATION"],
+                "__HPA_SCALE_DOWN_STABILIZATION__": os.environ["HPA_SCALE_DOWN_STABILIZATION"],
+                "__PRODUCTION_REQUEST_CPU__": os.environ["PRODUCTION_REQUEST_CPU"],
+                "__PRODUCTION_REQUEST_MEMORY__": os.environ["PRODUCTION_REQUEST_MEMORY"],
+                "__PRODUCTION_LIMIT_CPU__": os.environ["PRODUCTION_LIMIT_CPU"],
+                "__PRODUCTION_LIMIT_MEMORY__": os.environ["PRODUCTION_LIMIT_MEMORY"],
+                "__PRODUCTION_HPA_MIN_REPLICAS__": os.environ["PRODUCTION_HPA_MIN_REPLICAS"],
+                "__PRODUCTION_HPA_MAX_REPLICAS__": os.environ["PRODUCTION_HPA_MAX_REPLICAS"],
+                "__STARTUP_PROBE_FAILURE_THRESHOLD__": os.environ["STARTUP_PROBE_FAILURE_THRESHOLD"],
+            }
+        unresolved = []
+        for file_path in list(deploy_root.rglob('*.yaml')) + list(deploy_root.rglob('*.yml')):
+            content = file_path.read_text()
+            for placeholder, replacement in replacements.items():
+                content = content.replace(placeholder, replacement)
+            file_path.write_text(content)
+            matches = sorted(set(re.findall(r'__([A-Z0-9_]+)__', content)))
+            if matches:
+                unresolved.append((str(file_path), matches))
+        if unresolved:
+            for file_path, matches in unresolved:
+                print(f"Unresolved placeholders in {file_path}: {', '.join(matches)}", file=sys.stderr)
+            sys.exit(1)
+        PY
+        cd "${STAGED_ROOT}/${OVERLAY_ROOT}/${DEPLOY_OVERLAY}"
+        kustomize edit set image "${KUSTOMIZE_IMAGE_NAME:-app-image}=${IMAGE_URL}:${IMAGE_TAG}"
+        kustomize build . > "${RUNTIME_DIR}/rendered.yaml"
+        kubectl apply -f "${RUNTIME_DIR}/rendered.yaml" -n "${K8S_NAMESPACE}"
+        if ! kubectl rollout status "deployment/${APP_NAME}" -n "${K8S_NAMESPACE}" --timeout=300s; then
+          echo "::error::Rollout failed, initiating rollback..."
+          kubectl rollout undo "deployment/${APP_NAME}" -n "${K8S_NAMESPACE}" || true
+          kubectl get pods -n "${K8S_NAMESPACE}" -l "app=${APP_NAME}" -o wide || true
+          exit 1
+        fi
+        if [ "$PROFILE" = service ]; then
+          kubectl get all -n "${K8S_NAMESPACE}" -l "app=${APP_NAME}" -o wide
+        else
+          kubectl get services -n "${K8S_NAMESPACE}" -o wide
+        fi
+    - name: Log out from ACR
+      if: ${{ always() }}
+      run: docker logout "$ACR_REGISTRY"
+    - name: Record end time
+      id: record_end_time
+      if: ${{ always() }}
+      run: |
+        echo "value=$(date +%s)" >> "$GITHUB_OUTPUT"
+        echo "END_TIME=$(date +%s)" >> "$GITHUB_ENV"
+    - name: Send Notification To Lark
+      if: ${{ always() && (inputs.profile == 'single-app' || env.LARK_BOT_WEBHOOK != '') }}
+      uses: taotaro/actions-toolkit@send-action-notification-to-lark
+      with:
+        webhook: ${{ secrets.LARK_BOT_WEBHOOK }}
+        icon: ${{ vars.LARK_NOTIFICATION_ICON }}
+        title: Github Actions Automatic Deployment Job Build Result
+        trigger: ${{ github.actor }}
+        project-name: ${{ vars.PROJECT_DISPLAY_NAME || inputs.notification_project_fallback }}
+        start-time: ${{ steps.record_start_time.outputs.value }}
+        end-time: ${{ steps.record_end_time.outputs.value }}
+        repository: ${{ github.repository }}
+        run-id: ${{ github.run_id }}
+        environment: ${{ inputs.profile == 'service' && inputs.target_env || vars.ENVIRONMENT }}
+        status: ${{ job.status }}
+        alert-members: ${{ vars.LARK_NOTIFICATION_ALERT_MEMBERS }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      TZ: Asia/Shanghai
+      IMAGE_TAG: ${{ github.sha }}
+      IMAGE_URL: ${{ inputs.acr_registry }}/${{ vars.ACR_NAMESPACE }}/${{ vars.ACR_REPOSITORY }}
+      CUSTOMER_NAME: ${{ vars.CUSTOMER_NAME }}
+      PRODUCT_NAME: ${{ vars.PRODUCT_NAME }}
+      MODULE_NAME: ${{ vars.MODULE_NAME }}
+      DEPLOY_OVERLAY: ${{ vars.DEPLOY_OVERLAY }}
+      ENV_NAME: ${{ vars.ENVIRONMENT }}
+      KUSTOMIZE_IMAGE_NAME: ${{ vars.KUSTOMIZE_IMAGE_NAME }}
+      SERVICE_ACCOUNT_NAME: ${{ vars.SERVICE_ACCOUNT_NAME }}
+      CONFIG_MAP_NAME: ${{ vars.CONFIG_MAP_NAME }}
+      ALIYUN_LOG_STDOUT_NAME: ${{ vars.ALIYUN_LOG_STDOUT_NAME }}
+      APP_PORT: ${{ vars.APP_PORT }}
+      SERVICE_PORT: ${{ vars.SERVICE_PORT }}
+      HEALTHCHECK_PATH: ${{ vars.HEALTHCHECK_PATH }}
+      REPLICA_COUNT: ${{ vars.REPLICA_COUNT }}
+      REQUEST_CPU: ${{ vars.REQUEST_CPU }}
+      REQUEST_MEMORY: ${{ vars.REQUEST_MEMORY }}
+      LIMIT_CPU: ${{ vars.LIMIT_CPU }}
+      LIMIT_MEMORY: ${{ vars.LIMIT_MEMORY }}
+      PRODUCTION_REPLICA_COUNT: ${{ vars.PRODUCTION_REPLICA_COUNT }}
+      PRODUCTION_REQUEST_CPU: ${{ vars.PRODUCTION_REQUEST_CPU }}
+      PRODUCTION_REQUEST_MEMORY: ${{ vars.PRODUCTION_REQUEST_MEMORY }}
+      PRODUCTION_LIMIT_CPU: ${{ vars.PRODUCTION_LIMIT_CPU }}
+      PRODUCTION_LIMIT_MEMORY: ${{ vars.PRODUCTION_LIMIT_MEMORY }}
+      HPA_MAX_REPLICAS: ${{ vars.HPA_MAX_REPLICAS }}
+      HPA_CPU_UTILIZATION: ${{ vars.HPA_CPU_UTILIZATION }}
+      HPA_MEMORY_UTILIZATION: ${{ vars.HPA_MEMORY_UTILIZATION }}
+      HPA_SCALE_DOWN_STABILIZATION: ${{ vars.HPA_SCALE_DOWN_STABILIZATION }}
+      PRODUCTION_HPA_MIN_REPLICAS: ${{ vars.PRODUCTION_HPA_MIN_REPLICAS }}
+      PRODUCTION_HPA_MAX_REPLICAS: ${{ vars.PRODUCTION_HPA_MAX_REPLICAS }}
+      K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE }}
+      TARGET_ENV: ${{ inputs.target_env }}
+      ACR_REGISTRY: ${{ inputs.acr_registry }}
+      ACR_NAMESPACE: ${{ vars.ACR_NAMESPACE }}
+      ACR_REPOSITORY_PREFIX: ${{ vars.ACR_REPOSITORY_PREFIX }}
+      ACR_REPOSITORY_ENV: ${{ vars.ACR_REPOSITORY_ENV }}
+      APP_NAME_PREFIX: ${{ vars.APP_NAME_PREFIX }}
+      APP_NAME_ENV: ${{ vars.APP_NAME_ENV }}
+      USER_API_CONFIG_SECRET_NAME: ${{ vars.USER_API_CONFIG_SECRET_NAME }}
+      BUSINESS_API_CONFIG_SECRET_NAME: ${{ vars.BUSINESS_API_CONFIG_SECRET_NAME }}
+      PAYMENT_API_CONFIG_SECRET_NAME: ${{ vars.PAYMENT_API_CONFIG_SECRET_NAME }}
+      TASK_WORKER_CONFIG_SECRET_NAME: ${{ vars.TASK_WORKER_CONFIG_SECRET_NAME }}
+      LARK_BOT_WEBHOOK: ${{ secrets.LARK_BOT_WEBHOOK }}
+      REST_API_REPLICA_COUNT: ${{ vars.REST_API_REPLICA_COUNT }}
+      REST_API_REQUEST_CPU: ${{ vars.REST_API_REQUEST_CPU }}
+      REST_API_REQUEST_MEMORY: ${{ vars.REST_API_REQUEST_MEMORY }}
+      REST_API_LIMIT_CPU: ${{ vars.REST_API_LIMIT_CPU }}
+      REST_API_LIMIT_MEMORY: ${{ vars.REST_API_LIMIT_MEMORY }}
+      WORKER_REPLICA_COUNT: ${{ vars.WORKER_REPLICA_COUNT }}
+      WORKER_REQUEST_CPU: ${{ vars.WORKER_REQUEST_CPU }}
+      WORKER_REQUEST_MEMORY: ${{ vars.WORKER_REQUEST_MEMORY }}
+      WORKER_LIMIT_CPU: ${{ vars.WORKER_LIMIT_CPU }}
+      WORKER_LIMIT_MEMORY: ${{ vars.WORKER_LIMIT_MEMORY }}
+      HPA_MIN_REPLICAS: ${{ vars.HPA_MIN_REPLICAS }}
+      PRODUCTION_REST_API_REPLICA_COUNT: ${{ vars.PRODUCTION_REST_API_REPLICA_COUNT }}
+      PRODUCTION_REST_API_REQUEST_CPU: ${{ vars.PRODUCTION_REST_API_REQUEST_CPU }}
+      PRODUCTION_REST_API_REQUEST_MEMORY: ${{ vars.PRODUCTION_REST_API_REQUEST_MEMORY }}
+      PRODUCTION_REST_API_LIMIT_CPU: ${{ vars.PRODUCTION_REST_API_LIMIT_CPU }}
+      PRODUCTION_REST_API_LIMIT_MEMORY: ${{ vars.PRODUCTION_REST_API_LIMIT_MEMORY }}
+      PRODUCTION_WORKER_REPLICA_COUNT: ${{ vars.PRODUCTION_WORKER_REPLICA_COUNT }}
+      PRODUCTION_WORKER_REQUEST_CPU: ${{ vars.PRODUCTION_WORKER_REQUEST_CPU }}
+      PRODUCTION_WORKER_REQUEST_MEMORY: ${{ vars.PRODUCTION_WORKER_REQUEST_MEMORY }}
+      PRODUCTION_WORKER_LIMIT_CPU: ${{ vars.PRODUCTION_WORKER_LIMIT_CPU }}
+      PRODUCTION_WORKER_LIMIT_MEMORY: ${{ vars.PRODUCTION_WORKER_LIMIT_MEMORY }}
+      PROFILE: ${{ inputs.profile }}
+      EVENT_NAME: ${{ github.event_name }}
+      REF_NAME: ${{ github.ref_name }}
+      REPOSITORY: ${{ github.repository }}
+      RUN_ID: ${{ github.run_id }}
+      ACTOR: ${{ github.actor }}
+      SELECTED_SERVICES: ${{ inputs.selected_services }}
+      INPUT_PROFILE: ${{ inputs.profile }}
+      INPUT_GITHUB_ENVIRONMENT: ${{ inputs.github_environment }}
+      INPUT_REGION_ID: ${{ inputs.region_id }}
+      INPUT_ACR_REGISTRY: ${{ inputs.acr_registry }}
+      INPUT_ACR_INSTANCE_ID: ${{ inputs.acr_instance_id }}
+      INPUT_ACK_CLUSTER_ID: ${{ inputs.ack_cluster_id }}
+      INPUT_TARGET_ENV: ${{ inputs.target_env }}
+      INPUT_SERVICE: ${{ inputs.service }}
+      INPUT_KIND: ${{ inputs.kind }}
+      INPUT_DOCKERFILE: ${{ inputs.dockerfile }}
+      INPUT_APP_PORT: ${{ inputs.app_port }}
+      INPUT_SERVICE_PORT: ${{ inputs.service_port }}
+      INPUT_CONFIG_FILE: ${{ inputs.config_file }}
+      INPUT_OVERLAY_ROOT: ${{ inputs.overlay_root }}
+      INPUT_CONFIG_NAME_VARIABLE: ${{ inputs.config_name_variable }}
+      INPUT_APP_NAME_PREFIX_DEFAULT: ${{ inputs.app_name_prefix_default }}
+      INPUT_ACR_REPOSITORY_PREFIX_DEFAULT: ${{ inputs.acr_repository_prefix_default }}
+      INPUT_SELECTED_SERVICES: ${{ inputs.selected_services }}
+      INPUT_NOTIFICATION_PROJECT_FALLBACK: ${{ inputs.notification_project_fallback }}
+      INPUT_INSTANCE_CODE: ${{ inputs.instance_code }}
+      INPUT_PROJECT_NAME: ${{ inputs.project_name }}
+      INPUT_BUSINESS_MODULE: ${{ inputs.business_module }}
+      INPUT_ENVIRONMENT: ${{ inputs.environment }}
+      INPUT_DESCRIPTION: ${{ inputs.description }}
+      INPUT_APPROVAL_TIME: ${{ inputs.approval_time }}
+      INPUT_RELEASE_TYPE: ${{ inputs.release_type }}
+      RELEASE_INSTANCE_CODE: ${{ inputs.instance_code }}
+      RELEASE_PROJECT_NAME: ${{ inputs.project_name }}
+      RELEASE_BUSINESS_MODULE: ${{ inputs.business_module }}
+      RELEASE_ENVIRONMENT: ${{ inputs.environment }}
+      RELEASE_DESCRIPTION: ${{ inputs.description }}
+      RELEASE_APPROVAL_TIME: ${{ inputs.approval_time }}
+      RELEASE_RELEASE_TYPE: ${{ inputs.release_type }}
