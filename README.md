@@ -38,6 +38,10 @@ The generated caller is manual-dispatch only and pinned to the supplied central 
 
 The central workflow validates inputs and image identity, logs into ACR, builds/pushes, sets ACK context, renders/apply manifests, waits for rollout, attempts Deployment-only `rollout undo` on failure, and logs out. Undo does not revert all resource types and may have no previous revision on first deployment. Lark notification preserves the baseline failure semantics: notification failure can fail the workflow; it is not non-blocking. See generated `docs/deployment.md` for separately required platform configuration and first-deployment authorization.
 
+## Target bundles and migration
+
+Generated callers use `target_routing: environment`. Complete PROD/NONPROD defaults and optional full repository Environment TARGET overrides resolve inside the actual caller Environment job. See [target configuration and migration](TARGET-CONFIG.md) for exact names, fail-closed aliases, explicit Secret mappings and compatibility with published `8e9d563eac561080c4ea9816b00a7e5da4559516`. Services in the same repository/Environment share one target. Local tests do not establish real GitHub precedence or cloud ownership.
+
 ## VPS pull (unchanged)
 
 Run `bash /path/to/ack-deployment-workflow/init.sh` for the original interactive strategy selection, or select `--strategy vps-pull`. That path retains its clean-worktree/origin prerequisites and confirmed branch/commit/PR flow. It builds an ACR image for a VPS to pull through Docker Compose; ACK's write-only behavior above does not change VPS pull.

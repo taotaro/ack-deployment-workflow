@@ -61,6 +61,8 @@ def main():
         for key in value:
             if not re.fullmatch(r'[a-z0-9]([-a-z0-9]*[a-z0-9])?',value[key]):
                 fail('Invalid mapping '+key)
+        if value['environment'] not in ('prod', 'prd', 'production', 'dev', 'development', 'sit', 'uat', 'preview'):
+            fail('Unknown routing environment: ' + value['environment'])
     # No automatic push trigger. Branch and Environment remain explicit at dispatch.
     caller = yaml.safe_load((HOME/'templates/ack/caller.yaml.tmpl').read_text().replace('__CENTRAL_SHA__',args.central_sha))
     branches = json.dumps(list(mapping), separators=(',', ':'))
@@ -87,7 +89,13 @@ def main():
     docs += [f'| {b} | {b}-env | {v["overlay"]} | {v["environment"]} |' for b,v in mapping.items()]
     docs += ['', 'Set these application variables in each listed Environment; no values are inferred from Dockerfile.',
              'Configure ACR_NAMESPACE/ACR_REPOSITORY, required app variables above and optional resource overrides.',
-             'Authorize the repository for Org LUMIO_CURRENT_* metadata and cloud credential Secrets, and private workflow access.',
+             'Authorize the repository for Org LUMIO_PROD_* and LUMIO_NONPROD_* target bundles and private workflow access.',
+             'Each selected bundle needs REGION_ID, ACR_REGISTRY, ACR_INSTANCE_ID, ACK_CLUSTER_ID Variables and ALICLOUD_ACCESS_KEY_ID/ALICLOUD_ACCESS_KEY_SECRET Secrets.',
+             'Optional full Environment override: set all six LUMIO_TARGET_* members; a partial override fails, never mixes credentials with defaults.',
+             'All six cloud Secrets are explicitly transmitted by name, even when only defined in the actual Environment.',
+             'The unused default bundle may be empty. Keep TARGET absent at Org/repository scope; GitHub merges same-name keys individually.',
+             'Target selection is not credential isolation; Org authorization is repository-level.',
+             'Confirm real Secret/Environment precedence in a separately authorized GitHub execution; generation is local proof only.',
              'Set application build Secrets and LARK_BOT_WEBHOOK explicitly; do not store their values in files.',
              'Confirm target binding, Environment approval rules, existing Namespace/ServiceAccount and any ConfigMap.',
              'Dispatch only from a mapped branch after review and separately authorized first deployment verification.',

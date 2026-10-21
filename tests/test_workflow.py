@@ -31,8 +31,8 @@ def apply_env(env,path):
 
 class Proof(unittest.TestCase):
     def test_schema_shell_and_unchanged_boundaries(self):
-        self.assertEqual(len(W['on']['workflow_call']['inputs']),26)
-        self.assertEqual(sum(v.get('required') is True or v.get('required')=='true' for v in W['on']['workflow_call']['inputs'].values()),7)
+        self.assertEqual(len(W['on']['workflow_call']['inputs']),27)
+        self.assertEqual(sum(v.get('required') is True or v.get('required')=='true' for v in W['on']['workflow_call']['inputs'].values()),3)
         self.assertNotIn('concurrency',W['jobs']['deploy'])
         for repo,name in [('central','.github/workflows/deploy-ack.yaml'),('render',WF),('services',WF)]:
             data=load(IMPL/repo/name)
@@ -89,7 +89,7 @@ class Proof(unittest.TestCase):
         for name,value in W['jobs']['deploy']['env'].items():
             env[name]='' if '${{' in str(value) else str(value)
         env.update(PROFILE=profile,REF_NAME='development',EVENT_NAME='push',IMAGE_TAG='a'*40,IMAGE_URL='synthetic.example/team/app',ACR_REGISTRY='synthetic.example',ACR_NAMESPACE='team',ACR_REPOSITORY='app',TARGET_ENV=target,CUSTOMER_NAME='fixture',PRODUCT_NAME='product',MODULE_NAME='app',DEPLOY_OVERLAY='development' if profile=='single-app' or target=='dev' else target,GITHUB_ENV=str(root/'env'),GITHUB_OUTPUT=str(root/'output'),ALICLOUD_ACCESS_KEY_ID='synthetic-ak',ALICLOUD_ACCESS_KEY_SECRET='synthetic-sk')
-        values={'profile':profile,'github_environment':'development-env' if profile=='single-app' else target+'-env','region_id':'synthetic-region','acr_registry':'synthetic.example','acr_instance_id':'synthetic-instance','ack_cluster_id':'synthetic-cluster','notification_project_fallback':'synthetic label','target_env':target if profile=='service' else '', 'dockerfile':'Dockerfile','overlay_root':'deploy/overlays'}
+        values={'target_routing':'explicit','profile':profile,'github_environment':'development-env' if profile=='single-app' else target+'-env','region_id':'synthetic-region','acr_registry':'synthetic.example','acr_instance_id':'synthetic-instance','ack_cluster_id':'synthetic-cluster','notification_project_fallback':'synthetic label','target_env':target if profile=='service' else '', 'dockerfile':'Dockerfile','overlay_root':'deploy/overlays'}
         if profile=='service':
             name='task-worker' if kind=='worker' else 'user-api'
             values.update(service=name,kind=kind,dockerfile=name+'.Dockerfile',app_port='' if kind=='worker' else '1001',service_port='' if kind=='worker' else '1001',config_file='task.yaml' if kind=='worker' else name+'.yaml',overlay_root='deploy/worker_overlays' if kind=='worker' else 'deploy/overlays',config_name_variable=name.upper().replace('-','_')+'_CONFIG_SECRET_NAME',app_name_prefix_default='fixture',acr_repository_prefix_default='fixture')
@@ -108,7 +108,8 @@ class Proof(unittest.TestCase):
                         root=Path(d);env=self.fixture(root,profile,target,kind)
                         if profile=='single-app':env['DEPLOY_OVERLAY']='development' if target=='dev' else target
                         validation=execute(script('Validate workflow inputs'),env,root);self.assertEqual(validation.returncode,0,validation.stderr)
-                        bad=dict(env,INPUT_ACR_REGISTRY='https://invalid');self.assertNotEqual(execute(script('Validate workflow inputs'),bad,root).returncode,0)
+                        infra=execute(script('Resolve infrastructure target'),env,root);self.assertEqual(infra.returncode,0,infra.stderr)
+                        bad=dict(env,INPUT_ACR_REGISTRY='https://invalid');self.assertNotEqual(execute(script('Resolve infrastructure target'),bad,root).returncode,0)
                         resolve='Resolve single application' if profile=='single-app' else 'Resolve service configuration'
                         result=execute(script(resolve),env,root);self.assertEqual(result.returncode,0,result.stderr)
                         apply_env(env,root/'env')
@@ -159,7 +160,7 @@ class Proof(unittest.TestCase):
             shutil.rmtree(root/'deploy')
             env['INPUT_OVERLAY_ROOT']='custom/overlays'
             before={str(p.relative_to(root)):p.read_bytes() for p in root.rglob('*') if p.is_file()}
-            for name in ['Validate workflow inputs','Resolve service configuration']:
+            for name in ['Validate workflow inputs','Resolve infrastructure target','Resolve service configuration']:
                 result=execute(script(name),env,root);self.assertEqual(result.returncode,0,result.stderr)
             apply_env(env,root/'env')
             stub=root/'bin';stub.mkdir();kubectl=stub/'kubectl'

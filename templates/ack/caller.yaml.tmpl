@@ -44,14 +44,14 @@ jobs:
       description: ${{ inputs.description }}
       approval_time: ${{ inputs.approval_time }}
       release_type: ${{ inputs.release_type }}
-      region_id: ${{ vars.LUMIO_CURRENT_REGION_ID }}
-      acr_registry: ${{ vars.LUMIO_CURRENT_ACR_REGISTRY }}
-      acr_instance_id: ${{ vars.LUMIO_CURRENT_ACR_INSTANCE_ID }}
-      ack_cluster_id: ${{ vars.LUMIO_CURRENT_ACK_CLUSTER_ID }}
+      target_routing: environment
     secrets:
-      ALICLOUD_ACCESS_KEY_ID: ${{ secrets.LUMIO_CURRENT_ALICLOUD_ACCESS_KEY_ID }}
-      ALICLOUD_ACCESS_KEY_SECRET: ${{ secrets.LUMIO_CURRENT_ALICLOUD_ACCESS_KEY_SECRET
-        }}
+      LUMIO_PROD_ALICLOUD_ACCESS_KEY_ID: ${{ secrets.LUMIO_PROD_ALICLOUD_ACCESS_KEY_ID }}
+      LUMIO_PROD_ALICLOUD_ACCESS_KEY_SECRET: ${{ secrets.LUMIO_PROD_ALICLOUD_ACCESS_KEY_SECRET }}
+      LUMIO_NONPROD_ALICLOUD_ACCESS_KEY_ID: ${{ secrets.LUMIO_NONPROD_ALICLOUD_ACCESS_KEY_ID }}
+      LUMIO_NONPROD_ALICLOUD_ACCESS_KEY_SECRET: ${{ secrets.LUMIO_NONPROD_ALICLOUD_ACCESS_KEY_SECRET }}
+      LUMIO_TARGET_ALICLOUD_ACCESS_KEY_ID: ${{ secrets.LUMIO_TARGET_ALICLOUD_ACCESS_KEY_ID }}
+      LUMIO_TARGET_ALICLOUD_ACCESS_KEY_SECRET: ${{ secrets.LUMIO_TARGET_ALICLOUD_ACCESS_KEY_SECRET }}
       LARK_BOT_WEBHOOK: ${{ secrets.LARK_BOT_WEBHOOK }}
       CI_ACCESS_TOKEN: ${{ secrets.CI_ACCESS_TOKEN }}
       MONGODB_URI: ${{ secrets.MONGODB_URI }}

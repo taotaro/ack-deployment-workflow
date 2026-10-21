@@ -8,6 +8,8 @@ Requires Python 3 with PyYAML, Bash, Git and Kustomize. Run:
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 tests/test_workflow.py
+PYTHONDONTWRITEBYTECODE=1 python3 tests/test_target_routing.py
+bash tests/test_generation.sh
 ```
 
 The test currently compares against the pinned sibling baseline checkouts in the authorized workspace. It uses synthetic values and stub Docker/kubectl only. No cloud, build push, notification or real credential tests are executed. Existing build-argument debug logging is retained by explicit scope decision; this is not a log-safety guarantee. Do not provide real credentials when running tests.
@@ -27,6 +29,6 @@ bash /path/to/init.sh --strategy ack --app fixture-product-app \
 
 ## Release limitations
 
-The remote central repository is empty because commit/push is not authorized. Render/Services caller references still carry the explicit zero full-SHA release placeholder; they cannot resolve a real remote workflow until an authorized central commit is published and both callers pinned to it. Do not replace this pin with `main` or claim end-to-end GitHub execution. The central body is not a candidate echo stub.
+The original central revision `8e9d563eac561080c4ea9816b00a7e5da4559516` is published and immutable. TARGET-ROUTING-V1 central-only publication is authorized after independent review and fresh verification. Render/Services local examples retain their zero full-SHA placeholder and are not committed, pushed or bound automatically. See TARGET-CONFIG.md for configuration/migration. No real GitHub execution or deployment is implied.
 
-Org Secrets/Variables queries remain 403; private workflow access is `none`. Changing these settings, real workflow/cloud calls and deployment are separately authorized stages. Their absence cannot be treated as environment verification. Code review and independent fresh verification remain required before any `code_complete` decision.
+Product reports the NONPROD Organization bundle configured with selected access only for `taotaro/lumio-services`; the two Secret values were filled separately and have not been read or validated here. PROD remains unconfigured. The earlier Org-query 403 is no longer a current limitation; private central workflow access is unchanged. Real Environment-only metadata timing, Secret precedence, cloud ownership and caller binding remain unverified. Changing settings or executing workflows/cloud/deployment requires separate authorization. Source publication cannot be treated as environment verification; genuine published full-SHA business caller binding remains required for whole-Feature `code_complete`.

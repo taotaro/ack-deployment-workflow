@@ -8,18 +8,21 @@ name: Deploy ACK
       github_environment:
         type: string
         required: true
+      target_routing:
+        type: string
+        default: explicit
       region_id:
         type: string
-        required: true
+        default: ''
       acr_registry:
         type: string
-        required: true
+        default: ''
       acr_instance_id:
         type: string
-        required: true
+        default: ''
       ack_cluster_id:
         type: string
-        required: true
+        default: ''
       target_env:
         type: string
         default: ''
@@ -82,9 +85,21 @@ name: Deploy ACK
         default: ''
     secrets:
       ALICLOUD_ACCESS_KEY_ID:
-        required: true
+        required: false
       ALICLOUD_ACCESS_KEY_SECRET:
-        required: true
+        required: false
+      LUMIO_PROD_ALICLOUD_ACCESS_KEY_ID:
+        required: false
+      LUMIO_PROD_ALICLOUD_ACCESS_KEY_SECRET:
+        required: false
+      LUMIO_NONPROD_ALICLOUD_ACCESS_KEY_ID:
+        required: false
+      LUMIO_NONPROD_ALICLOUD_ACCESS_KEY_SECRET:
+        required: false
+      LUMIO_TARGET_ALICLOUD_ACCESS_KEY_ID:
+        required: false
+      LUMIO_TARGET_ALICLOUD_ACCESS_KEY_SECRET:
+        required: false
       CI_ACCESS_TOKEN:
         required: false
       MONGODB_URI:
@@ -108,9 +123,6 @@ jobs:
         fetch-depth: 0
         persist-credentials: false
     - name: Validate workflow inputs
-      env:
-        ALICLOUD_ACCESS_KEY_ID: ${{ secrets.ALICLOUD_ACCESS_KEY_ID }}
-        ALICLOUD_ACCESS_KEY_SECRET: ${{ secrets.ALICLOUD_ACCESS_KEY_SECRET }}
       run: |
         python3 - <<'PY'
         import os, re
@@ -119,12 +131,9 @@ jobs:
         def require(ok, name):
             if not ok:
                 raise SystemExit('Invalid or missing workflow value: ' + name)
-        for key in ('profile', 'github_environment', 'region_id', 'acr_registry', 'acr_instance_id', 'ack_cluster_id', 'notification_project_fallback'):
+        for key in ('profile', 'github_environment', 'notification_project_fallback'):
             require(bool(v(key)), key)
-        for key in ('ALICLOUD_ACCESS_KEY_ID', 'ALICLOUD_ACCESS_KEY_SECRET'):
-            require(bool(os.environ.get(key)), key)
         require(v('profile') in ('single-app', 'service'), 'profile')
-        require(bool(re.fullmatch(r'[A-Za-z0-9.-]+(?::[0-9]+)?', v('acr_registry'))), 'acr_registry')
         root = Path.cwd().resolve()
         def path(value, name, file=False):
             p = Path(value)
@@ -156,6 +165,53 @@ jobs:
             path('Dockerfile', 'dockerfile', True)
             path('deploy/overlays/' + os.environ.get('DEPLOY_OVERLAY', ''), 'overlay')
             require(bool(os.environ.get('ACR_NAMESPACE')) and bool(os.environ.get('ACR_REPOSITORY')), 'image path')
+        PY
+    - name: Resolve infrastructure target
+      run: |
+        python3 - <<'PY'
+        import os, re
+        def require(ok, name):
+            if not ok:
+                raise SystemExit('Invalid or missing target value: ' + name)
+        suffixes = ('REGION_ID', 'ACR_REGISTRY', 'ACR_INSTANCE_ID', 'ACK_CLUSTER_ID',
+                    'ALICLOUD_ACCESS_KEY_ID', 'ALICLOUD_ACCESS_KEY_SECRET')
+        mode = os.environ['INPUT_TARGET_ROUTING']
+        require(mode in ('explicit', 'environment'), 'target_routing')
+        legacy = [os.environ.get('INPUT_' + key, '') for key in suffixes[:4]]
+        legacy += [os.environ.get(key, '') for key in suffixes[4:]]
+        if mode == 'explicit':
+            selected = legacy
+            source = 'explicit'
+        else:
+            require(not any(legacy), 'environment routing excludes explicit bundle')
+            if os.environ['PROFILE'] == 'service':
+                identity = os.environ['INPUT_TARGET_ENV']
+                mapping = {'dev': 'NONPROD', 'sit': 'NONPROD', 'uat': 'NONPROD', 'production': 'PROD'}
+            else:
+                require(not os.environ.get('INPUT_TARGET_ENV'), 'single-app target_env')
+                identity = os.environ.get('ENV_NAME') or os.environ.get('DEPLOY_OVERLAY', '')
+                mapping = {'prod': 'PROD', 'prd': 'PROD', 'production': 'PROD', 'dev': 'NONPROD',
+                           'development': 'NONPROD', 'sit': 'NONPROD', 'uat': 'NONPROD', 'preview': 'NONPROD'}
+            require(identity in mapping, 'known environment')
+            override = [os.environ.get('LUMIO_TARGET_' + key, '') for key in suffixes]
+            source = 'TARGET' if any(override) else mapping[identity]
+            selected = override if any(override) else [os.environ.get('LUMIO_' + source + '_' + key, '') for key in suffixes]
+        for key, value in zip(suffixes, selected):
+            require(bool(value) and not any(ch.isspace() for ch in value), source + ' ' + key)
+        # Keep the legacy explicit format rules; stricter bundle validation applies to routed calls.
+        require(bool(re.fullmatch(r'[A-Za-z0-9.-]+(?::[0-9]+)?', selected[1])), 'ACR_REGISTRY')
+        if mode == 'environment':
+            for index in (0, 2, 3):
+                require(bool(re.fullmatch(r'[A-Za-z0-9._-]+', selected[index])), source + ' ' + suffixes[index])
+            if ':' in selected[1]:
+                require(1 <= int(selected[1].rsplit(':', 1)[1]) <= 65535, 'registry port')
+        # GITHUB_ENV is consumed by later steps, never printed or exposed as job outputs.
+        with open(os.environ['GITHUB_ENV'], 'a') as output:
+            for key, value in zip(suffixes, selected):
+                output.write('RESOLVED_' + key + '=' + value + '\n')
+            output.write('ACR_REGISTRY=' + selected[1] + '\n')
+            if os.environ['PROFILE'] == 'single-app':
+                output.write('IMAGE_URL=' + selected[1] + '/' + os.environ['ACR_NAMESPACE'] + '/' + os.environ['ACR_REPOSITORY'] + '\n')
         PY
     - name: Record start time
       id: record_start_time
@@ -442,11 +498,11 @@ jobs:
     - name: Login to ACR
       uses: aliyun/acr-login@v1
       with:
-        login-server: https://${{ inputs.acr_registry }}
-        access-key-id: ${{ secrets.ALICLOUD_ACCESS_KEY_ID }}
-        access-key-secret: ${{ secrets.ALICLOUD_ACCESS_KEY_SECRET }}
-        region-id: ${{ inputs.region_id }}
-        instance-id: ${{ inputs.acr_instance_id }}
+        login-server: https://${{ env.RESOLVED_ACR_REGISTRY }}
+        access-key-id: ${{ env.RESOLVED_ALICLOUD_ACCESS_KEY_ID }}
+        access-key-secret: ${{ env.RESOLVED_ALICLOUD_ACCESS_KEY_SECRET }}
+        region-id: ${{ env.RESOLVED_REGION_ID }}
+        instance-id: ${{ env.RESOLVED_ACR_INSTANCE_ID }}
     - name: Load build arguments
       if: ${{ inputs.profile == 'single-app' && vars.BUILD_ARGS != '' }}
       env:
@@ -500,9 +556,9 @@ jobs:
     - name: Set K8s context
       uses: aliyun/ack-set-context@v1
       with:
-        access-key-id: ${{ secrets.ALICLOUD_ACCESS_KEY_ID }}
-        access-key-secret: ${{ secrets.ALICLOUD_ACCESS_KEY_SECRET }}
-        cluster-id: ${{ inputs.ack_cluster_id }}
+        access-key-id: ${{ env.RESOLVED_ALICLOUD_ACCESS_KEY_ID }}
+        access-key-secret: ${{ env.RESOLVED_ALICLOUD_ACCESS_KEY_SECRET }}
+        cluster-id: ${{ env.RESOLVED_ACK_CLUSTER_ID }}
     - name: Set up Kustomize
       uses: imranismail/setup-kustomize@v2
     - name: Render and deploy manifests
@@ -733,6 +789,27 @@ jobs:
       RUN_ID: ${{ github.run_id }}
       ACTOR: ${{ github.actor }}
       SELECTED_SERVICES: ${{ inputs.selected_services }}
+      INPUT_TARGET_ROUTING: ${{ inputs.target_routing }}
+      ALICLOUD_ACCESS_KEY_ID: ${{ secrets.ALICLOUD_ACCESS_KEY_ID }}
+      ALICLOUD_ACCESS_KEY_SECRET: ${{ secrets.ALICLOUD_ACCESS_KEY_SECRET }}
+      LUMIO_PROD_REGION_ID: ${{ vars.LUMIO_PROD_REGION_ID }}
+      LUMIO_PROD_ACR_REGISTRY: ${{ vars.LUMIO_PROD_ACR_REGISTRY }}
+      LUMIO_PROD_ACR_INSTANCE_ID: ${{ vars.LUMIO_PROD_ACR_INSTANCE_ID }}
+      LUMIO_PROD_ACK_CLUSTER_ID: ${{ vars.LUMIO_PROD_ACK_CLUSTER_ID }}
+      LUMIO_PROD_ALICLOUD_ACCESS_KEY_ID: ${{ secrets.LUMIO_PROD_ALICLOUD_ACCESS_KEY_ID }}
+      LUMIO_PROD_ALICLOUD_ACCESS_KEY_SECRET: ${{ secrets.LUMIO_PROD_ALICLOUD_ACCESS_KEY_SECRET }}
+      LUMIO_NONPROD_REGION_ID: ${{ vars.LUMIO_NONPROD_REGION_ID }}
+      LUMIO_NONPROD_ACR_REGISTRY: ${{ vars.LUMIO_NONPROD_ACR_REGISTRY }}
+      LUMIO_NONPROD_ACR_INSTANCE_ID: ${{ vars.LUMIO_NONPROD_ACR_INSTANCE_ID }}
+      LUMIO_NONPROD_ACK_CLUSTER_ID: ${{ vars.LUMIO_NONPROD_ACK_CLUSTER_ID }}
+      LUMIO_NONPROD_ALICLOUD_ACCESS_KEY_ID: ${{ secrets.LUMIO_NONPROD_ALICLOUD_ACCESS_KEY_ID }}
+      LUMIO_NONPROD_ALICLOUD_ACCESS_KEY_SECRET: ${{ secrets.LUMIO_NONPROD_ALICLOUD_ACCESS_KEY_SECRET }}
+      LUMIO_TARGET_REGION_ID: ${{ vars.LUMIO_TARGET_REGION_ID }}
+      LUMIO_TARGET_ACR_REGISTRY: ${{ vars.LUMIO_TARGET_ACR_REGISTRY }}
+      LUMIO_TARGET_ACR_INSTANCE_ID: ${{ vars.LUMIO_TARGET_ACR_INSTANCE_ID }}
+      LUMIO_TARGET_ACK_CLUSTER_ID: ${{ vars.LUMIO_TARGET_ACK_CLUSTER_ID }}
+      LUMIO_TARGET_ALICLOUD_ACCESS_KEY_ID: ${{ secrets.LUMIO_TARGET_ALICLOUD_ACCESS_KEY_ID }}
+      LUMIO_TARGET_ALICLOUD_ACCESS_KEY_SECRET: ${{ secrets.LUMIO_TARGET_ALICLOUD_ACCESS_KEY_SECRET }}
       INPUT_PROFILE: ${{ inputs.profile }}
       INPUT_GITHUB_ENVIRONMENT: ${{ inputs.github_environment }}
       INPUT_REGION_ID: ${{ inputs.region_id }}
