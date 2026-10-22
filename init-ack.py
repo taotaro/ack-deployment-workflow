@@ -19,8 +19,11 @@ def fail(message):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--strategy', choices=['ack'], default='ack')
-    for name in ['app', 'customer', 'product', 'module', 'port', 'health', 'environment-map', 'central-sha']:
+    for name in ['app', 'customer', 'product', 'module', 'port', 'health', 'environment-map']:
         p.add_argument('--' + name)
+    reference = p.add_mutually_exclusive_group()
+    reference.add_argument('--central-ref', choices=['main'], default='main', help='Central workflow reference (default: main)')
+    reference.add_argument('--central-sha', help='Legacy explicit published SHA override; onboarding defaults to main')
     p.add_argument('--config-map', default='')
     p.add_argument('--service', action='store_true', help='Explicitly include an HTTP Service')
     p.add_argument('--hpa', action='store_true', help='Explicitly include an HPA')
@@ -33,7 +36,7 @@ def main():
         fail('Run at an existing Git repository root')
     if not (root / 'Dockerfile').is_file():
         fail('An existing root Dockerfile is required')
-    for key in ['app','customer','product','module','port','health','environment_map','central_sha']:
+    for key in ['app','customer','product','module','port','health','environment_map']:
         if not getattr(args, key):
             setattr(args, key, input(key.replace('_', '-') + ': ').strip())
     for key in ['app','customer','product','module']:
@@ -46,8 +49,9 @@ def main():
         fail('Invalid application port')
     if not re.fullmatch(r'/[^\s]*',args.health):
         fail('Invalid health path')
-    if not re.fullmatch(r'[0-9a-f]{40}', args.central_sha) or args.central_sha == '0'*40:
-        fail('An authorized published full central commit SHA is required')
+    central_ref = args.central_sha if args.central_sha is not None else args.central_ref
+    if args.central_sha is not None and (not re.fullmatch(r'[0-9a-f]{40}', args.central_sha) or args.central_sha == '0'*40):
+        fail('Legacy --central-sha requires an authorized published full central commit SHA')
     if args.config_map and not re.fullmatch(r'[a-z0-9]([-a-z0-9]*[a-z0-9])?',args.config_map):
         fail('Invalid ConfigMap name')
     mapping = json.loads(args.environment_map)
@@ -64,7 +68,7 @@ def main():
         if value['environment'] not in ('prod', 'prd', 'production', 'dev', 'development', 'sit', 'uat', 'preview'):
             fail('Unknown routing environment: ' + value['environment'])
     # No automatic push trigger. Branch and Environment remain explicit at dispatch.
-    caller = yaml.safe_load((HOME/'templates/ack/caller.yaml.tmpl').read_text().replace('__CENTRAL_SHA__',args.central_sha))
+    caller = yaml.safe_load((HOME/'templates/ack/caller.yaml.tmpl').read_text().replace('__CENTRAL_REF__',central_ref))
     branches = json.dumps(list(mapping), separators=(',', ':'))
     caller['jobs']['build']['if'] = "${{ contains(fromJSON('" + branches + "'), github.ref_name) }}"
     files = {'.github/workflows/deploy.yaml':yaml.safe_dump(caller,sort_keys=False)}
@@ -87,7 +91,8 @@ def main():
             f'APP_PORT={args.port}', f'SERVICE_PORT={args.port}', f'HEALTHCHECK_PATH={args.health}', f'CONFIG_MAP_NAME={args.config_map}', '',
             '## Explicit branch / Environment mapping', '| Branch | GitHub Environment | DEPLOY_OVERLAY | ENVIRONMENT |', '|---|---|---|---|']
     docs += [f'| {b} | {b}-env | {v["overlay"]} | {v["environment"]} |' for b,v in mapping.items()]
-    docs += ['', 'Set these application variables in each listed Environment; no values are inferred from Dockerfile.',
+    docs += ['', f'Central workflow reference: `{central_ref}`. New runs using main adopt reviewed central changes; central publication does not trigger application deployment.',
+             'Set these application variables in each listed Environment; no values are inferred from Dockerfile.',
              'Configure ACR_NAMESPACE/ACR_REPOSITORY, required app variables above and optional resource overrides.',
              'Authorize the repository for Org LUMIO_PROD_* and LUMIO_NONPROD_* target bundles and private workflow access.',
              'Each selected bundle needs REGION_ID, ACR_REGISTRY, ACR_INSTANCE_ID, ACK_CLUSTER_ID Variables and ALICLOUD_ACCESS_KEY_ID/ALICLOUD_ACCESS_KEY_SECRET Secrets.',

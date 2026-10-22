@@ -17,11 +17,11 @@ make_target() {
   printf '%s' "$target"
 }
 
-# This SHA is synthetic local test input, not a published central revision.
+# Default onboarding follows central main without requiring a SHA prompt.
 ack_args=(--strategy ack --app demo-admin-web --customer demo --product admin
   --module web --port 3001 --health /status
   --environment-map '{"development":{"overlay":"development","environment":"dev"},"main":{"overlay":"production","environment":"prod"}}'
-  --central-sha 1111111111111111111111111111111111111111 --yes)
+  --yes)
 
 ack_target=$(make_target)
 (
@@ -51,7 +51,7 @@ import yaml
 caller = yaml.safe_load(Path(".github/workflows/deploy.yaml").read_text())
 assert set(caller["on"]) == {"workflow_dispatch"}
 job = caller["jobs"]["build"]
-assert job["uses"] == "taotaro/ack-deployment-workflow/.github/workflows/deploy-ack.yaml@" + "1" * 40
+assert job["uses"] == "taotaro/ack-deployment-workflow/.github/workflows/deploy-ack.yaml@main"
 assert "development" in job["if"] and "main" in job["if"]
 deployment, = yaml.safe_load_all(Path("deploy/base/deployment.yaml").read_text())
 assert deployment["kind"] == "Deployment"

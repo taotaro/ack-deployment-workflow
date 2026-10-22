@@ -16,19 +16,19 @@ The test currently compares against the pinned sibling baseline checkouts in the
 
 ## New ACK application
 
-Run `bash /path/to/init.sh --strategy ack --help`. ACK initialization requires explicit application identity, port, health path, branch/overlay/environment mapping, and a published full central SHA. It plans and validates in temporary storage, asks confirmation and only writes new files. `--dry-run` changes no target files, branch or index. Existing files and escaping paths are rejected. Service and HPA are opt-in. It never commits, pushes, opens a PR or configures GitHub/cloud resources. `init.sh --strategy vps-pull` continues to use the original implementation and its original lifecycle; it is not part of this ACK change.
+Run `bash /path/to/init.sh --strategy ack --help`. ACK initialization requires explicit application identity, port, health path, branch/overlay/environment mapping, and defaults the central reference to `main` (no SHA prompt; optional `--central-ref main`, legacy explicit `--central-sha` supported). It plans and validates in temporary storage, asks confirmation and only writes new files. `--dry-run` changes no target files, branch or index. Existing files and escaping paths are rejected. Service and HPA are opt-in. It never commits, pushes, opens a PR or configures GitHub/cloud resources. `init.sh --strategy vps-pull` continues to use the original implementation and its original lifecycle; it is not part of this ACK change.
 
-Example (fixture SHA only; not a published release):
+Example (local dry-run only; default central reference is main):
 
 ```sh
 bash /path/to/init.sh --strategy ack --app fixture-product-app \
   --customer fixture --product product --module app --port 8000 --health /health \
   --environment-map '{"development":{"overlay":"development","environment":"dev"}}' \
-  --central-sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --dry-run
+  --central-ref main --dry-run
 ```
 
 ## Release limitations
 
-The original central revision `8e9d563eac561080c4ea9816b00a7e5da4559516` is published and immutable. TARGET-ROUTING-V1 central-only publication is authorized after independent review and fresh verification. Render/Services local examples retain their zero full-SHA placeholder and are not committed, pushed or bound automatically. See TARGET-CONFIG.md for configuration/migration. No real GitHub execution or deployment is implied.
+The original central revision `8e9d563eac561080c4ea9816b00a7e5da4559516` is published and immutable. TARGET-ROUTING-V1 central-only publication is authorized after independent review and fresh verification. Current Render/Services examples use `@main` under Product MAIN-REFERENCE-V1; the actual business caller branches are separately reviewed/published. Initializer generation does not commit, push, bind or deploy them automatically. See TARGET-CONFIG.md for configuration/migration. No real GitHub execution or deployment is implied.
 
-Product reports the NONPROD Organization bundle configured with selected access only for `taotaro/lumio-services`; the two Secret values were filled separately and have not been read or validated here. PROD remains unconfigured. The earlier Org-query 403 is no longer a current limitation; private central workflow access is unchanged. Real Environment-only metadata timing, Secret precedence, cloud ownership and caller binding remain unverified. Changing settings or executing workflows/cloud/deployment requires separate authorization. Source publication cannot be treated as environment verification; genuine published full-SHA business caller binding remains required for whole-Feature `code_complete`.
+NONPROD Organization Variables have all-repository visibility; the two Secrets remain selected and authorize Services and Render. Secret values were supplied separately and are not read by these tests. Private central workflow access is organization-scoped. Authorized Dev runs exercised target resolution, ACR push and ACK apply; failures/partial outcomes and exact permissions remain in the Feature evidence, not a whole-environment success claim. PROD/TARGET override and full application health remain unverified. Changing settings or executing workflows/cloud/deployment requires separate authorization. Source publication cannot be treated as environment verification; reviewed published business caller binding to `@main` under MAIN-REFERENCE-V1 is required for whole-Feature `code_complete`; runtime evidence records the resolved central SHA.

@@ -77,6 +77,33 @@ class Proof(unittest.TestCase):
             apply_env(env, root / 'env')
             self.assertEqual(env['IMAGE_URL'], 'synthetic.example/team/fixture-repository')
 
+    def test_initializer_main_reference_policy(self):
+        cases = [([], 'main'), (['--central-ref', 'main'], 'main'),
+                 (['--central-ref', 'main', '--central-sha', 'a'*40], None),
+                 (['--central-ref', 'unapproved'], None),
+                 (['--central-sha', '0'*40], None),
+                 (['--central-sha', ''], None), (['--central-sha', 'invalid'], None)]
+        for extra, expected in cases:
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                subprocess.run(['git', 'init', '-q', str(root)], check=True)
+                (root / 'Dockerfile').write_text('FROM scratch\n')
+                args = ['python3', str(CENTRAL/'init-ack.py'), '--app', 'fixture-product-app',
+                        '--customer', 'fixture', '--product', 'product', '--module', 'app',
+                        '--port', '8000', '--health', '/health', '--environment-map',
+                        json.dumps({'development': {'overlay': 'development', 'environment': 'dev'}}),
+                        '--yes', *extra]
+                result = subprocess.run(args, cwd=root, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+                output = root / '.github/workflows/deploy.yaml'
+                if expected is None:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(output.exists())
+                    self.assertFalse((root / 'deploy').exists())
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertTrue(yaml.safe_load(output.read_text())['jobs']['build']['uses'].endswith('@'+expected))
+                    self.assertIn('Central workflow reference: `main`', (root/'docs/deployment.md').read_text())
+
     def test_build_argv_and_failure(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d); docker=root/'docker'

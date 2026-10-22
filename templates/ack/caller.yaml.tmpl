@@ -32,7 +32,7 @@ name: Build Docker Image To ACR And Deploy To ACK
         type: string
 jobs:
   build:
-    uses: taotaro/ack-deployment-workflow/.github/workflows/deploy-ack.yaml@__CENTRAL_SHA__
+    uses: taotaro/ack-deployment-workflow/.github/workflows/deploy-ack.yaml@__CENTRAL_REF__
     with:
       profile: single-app
       github_environment: ${{ github.ref_name }}-env
