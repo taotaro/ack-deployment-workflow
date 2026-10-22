@@ -57,6 +57,26 @@ class Proof(unittest.TestCase):
         old= (original/'init.sh').read_text().split('main() {')[0]
         self.assertEqual(old,(CENTRAL/'init.sh').read_text().split('main() {')[0])
 
+    def test_single_app_repository_environment_binding(self):
+        # GitHub Variables are not shell variables unless the workflow binds them.
+        # The general fixture supplies ACR_REPOSITORY, so explicitly remove that
+        # shortcut and resolve this value only through the declared job mapping.
+        declared = W['jobs']['deploy']['env']
+        self.assertEqual(declared.get('ACR_REPOSITORY'), '${{ vars.ACR_REPOSITORY }}')
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            env = self.fixture(root, 'single-app')
+            env.pop('ACR_REPOSITORY')
+            for name, value in declared.items():
+                if value == '${{ vars.ACR_REPOSITORY }}':
+                    env[name] = 'fixture-repository'
+            validation = execute(script('Validate workflow inputs'), env, root)
+            self.assertEqual(validation.returncode, 0, validation.stderr)
+            infra = execute(script('Resolve infrastructure target'), env, root)
+            self.assertEqual(infra.returncode, 0, infra.stderr)
+            apply_env(env, root / 'env')
+            self.assertEqual(env['IMAGE_URL'], 'synthetic.example/team/fixture-repository')
+
     def test_build_argv_and_failure(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d); docker=root/'docker'

@@ -752,6 +752,7 @@ jobs:
       TARGET_ENV: ${{ inputs.target_env }}
       ACR_REGISTRY: ${{ inputs.acr_registry }}
       ACR_NAMESPACE: ${{ vars.ACR_NAMESPACE }}
+      ACR_REPOSITORY: ${{ vars.ACR_REPOSITORY }}
       ACR_REPOSITORY_PREFIX: ${{ vars.ACR_REPOSITORY_PREFIX }}
       ACR_REPOSITORY_ENV: ${{ vars.ACR_REPOSITORY_ENV }}
       APP_NAME_PREFIX: ${{ vars.APP_NAME_PREFIX }}
