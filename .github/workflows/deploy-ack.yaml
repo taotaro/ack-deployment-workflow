@@ -88,6 +88,19 @@ name: Deploy ACK
         required: false
       ALICLOUD_ACCESS_KEY_SECRET:
         required: false
+      TAOTARO_PROD_ALICLOUD_ACCESS_KEY_ID:
+        required: false
+      TAOTARO_PROD_ALICLOUD_ACCESS_KEY_SECRET:
+        required: false
+      TAOTARO_NONPROD_ALICLOUD_ACCESS_KEY_ID:
+        required: false
+      TAOTARO_NONPROD_ALICLOUD_ACCESS_KEY_SECRET:
+        required: false
+      TAOTARO_TARGET_ALICLOUD_ACCESS_KEY_ID:
+        required: false
+      TAOTARO_TARGET_ALICLOUD_ACCESS_KEY_SECRET:
+        required: false
+      # Compatibility for existing callers during organization-prefix migration.
       LUMIO_PROD_ALICLOUD_ACCESS_KEY_ID:
         required: false
       LUMIO_PROD_ALICLOUD_ACCESS_KEY_SECRET:
@@ -193,9 +206,22 @@ jobs:
                 mapping = {'prod': 'PROD', 'prd': 'PROD', 'production': 'PROD', 'dev': 'NONPROD',
                            'development': 'NONPROD', 'sit': 'NONPROD', 'uat': 'NONPROD', 'preview': 'NONPROD'}
             require(identity in mapping, 'known environment')
-            override = [os.environ.get('LUMIO_TARGET_' + key, '') for key in suffixes]
-            source = 'TARGET' if any(override) else mapping[identity]
-            selected = override if any(override) else [os.environ.get('LUMIO_' + source + '_' + key, '') for key in suffixes]
+            canonical_override = [os.environ.get('TAOTARO_TARGET_' + key, '') for key in suffixes]
+            legacy_override = [os.environ.get('LUMIO_TARGET_' + key, '') for key in suffixes]
+            source = mapping[identity]
+            canonical_default = [os.environ.get('TAOTARO_' + source + '_' + key, '') for key in suffixes]
+            legacy_default = [os.environ.get('LUMIO_' + source + '_' + key, '') for key in suffixes]
+            # Staged default Variables alone must not break old callers. Select
+            # one complete vocabulary from the selected credentials/override;
+            # unused defaults and per-key fallback never choose an account.
+            canonical = any(canonical_override) or any(canonical_default[4:]) or not any(legacy_override[4:] + legacy_default[4:])
+            if canonical:
+                require(not any(legacy_override) or any(canonical_override), 'legacy TARGET must migrate to TAOTARO_TARGET')
+                override, default, prefix = canonical_override, canonical_default, 'TAOTARO'
+            else:
+                override, default, prefix = legacy_override, legacy_default, 'LUMIO'
+            selected = override if any(override) else default
+            source = prefix + '_' + ('TARGET' if any(override) else source)
         for key, value in zip(suffixes, selected):
             require(bool(value) and not any(ch.isspace() for ch in value), source + ' ' + key)
         # Keep the legacy explicit format rules; stricter bundle validation applies to routed calls.
@@ -793,6 +819,25 @@ jobs:
       INPUT_TARGET_ROUTING: ${{ inputs.target_routing }}
       ALICLOUD_ACCESS_KEY_ID: ${{ secrets.ALICLOUD_ACCESS_KEY_ID }}
       ALICLOUD_ACCESS_KEY_SECRET: ${{ secrets.ALICLOUD_ACCESS_KEY_SECRET }}
+      TAOTARO_PROD_REGION_ID: ${{ vars.TAOTARO_PROD_REGION_ID }}
+      TAOTARO_PROD_ACR_REGISTRY: ${{ vars.TAOTARO_PROD_ACR_REGISTRY }}
+      TAOTARO_PROD_ACR_INSTANCE_ID: ${{ vars.TAOTARO_PROD_ACR_INSTANCE_ID }}
+      TAOTARO_PROD_ACK_CLUSTER_ID: ${{ vars.TAOTARO_PROD_ACK_CLUSTER_ID }}
+      TAOTARO_PROD_ALICLOUD_ACCESS_KEY_ID: ${{ secrets.TAOTARO_PROD_ALICLOUD_ACCESS_KEY_ID }}
+      TAOTARO_PROD_ALICLOUD_ACCESS_KEY_SECRET: ${{ secrets.TAOTARO_PROD_ALICLOUD_ACCESS_KEY_SECRET }}
+      TAOTARO_NONPROD_REGION_ID: ${{ vars.TAOTARO_NONPROD_REGION_ID }}
+      TAOTARO_NONPROD_ACR_REGISTRY: ${{ vars.TAOTARO_NONPROD_ACR_REGISTRY }}
+      TAOTARO_NONPROD_ACR_INSTANCE_ID: ${{ vars.TAOTARO_NONPROD_ACR_INSTANCE_ID }}
+      TAOTARO_NONPROD_ACK_CLUSTER_ID: ${{ vars.TAOTARO_NONPROD_ACK_CLUSTER_ID }}
+      TAOTARO_NONPROD_ALICLOUD_ACCESS_KEY_ID: ${{ secrets.TAOTARO_NONPROD_ALICLOUD_ACCESS_KEY_ID }}
+      TAOTARO_NONPROD_ALICLOUD_ACCESS_KEY_SECRET: ${{ secrets.TAOTARO_NONPROD_ALICLOUD_ACCESS_KEY_SECRET }}
+      TAOTARO_TARGET_REGION_ID: ${{ vars.TAOTARO_TARGET_REGION_ID }}
+      TAOTARO_TARGET_ACR_REGISTRY: ${{ vars.TAOTARO_TARGET_ACR_REGISTRY }}
+      TAOTARO_TARGET_ACR_INSTANCE_ID: ${{ vars.TAOTARO_TARGET_ACR_INSTANCE_ID }}
+      TAOTARO_TARGET_ACK_CLUSTER_ID: ${{ vars.TAOTARO_TARGET_ACK_CLUSTER_ID }}
+      TAOTARO_TARGET_ALICLOUD_ACCESS_KEY_ID: ${{ secrets.TAOTARO_TARGET_ALICLOUD_ACCESS_KEY_ID }}
+      TAOTARO_TARGET_ALICLOUD_ACCESS_KEY_SECRET: ${{ secrets.TAOTARO_TARGET_ALICLOUD_ACCESS_KEY_SECRET }}
+      # Legacy namespace remains bound until existing callers migrate.
       LUMIO_PROD_REGION_ID: ${{ vars.LUMIO_PROD_REGION_ID }}
       LUMIO_PROD_ACR_REGISTRY: ${{ vars.LUMIO_PROD_ACR_REGISTRY }}
       LUMIO_PROD_ACR_INSTANCE_ID: ${{ vars.LUMIO_PROD_ACR_INSTANCE_ID }}

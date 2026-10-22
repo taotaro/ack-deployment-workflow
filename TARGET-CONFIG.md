@@ -4,14 +4,14 @@ New generated callers set `target_routing: environment`. The central job first e
 
 ## Complete bundles and precedence
 
-Configure two complete Organization bundles (repository-level authorization): `LUMIO_PROD_*` and `LUMIO_NONPROD_*`. Each has these suffixes:
+Configure two complete Organization bundles (repository-level authorization): `TAOTARO_PROD_*` and `TAOTARO_NONPROD_*`. Each has these suffixes:
 
 - Variables: `REGION_ID`, `ACR_REGISTRY`, `ACR_INSTANCE_ID`, `ACK_CLUSTER_ID`.
 - Secrets: `ALICLOUD_ACCESS_KEY_ID`, `ALICLOUD_ACCESS_KEY_SECRET`.
 
-For example, production uses `LUMIO_PROD_REGION_ID` and `LUMIO_PROD_ALICLOUD_ACCESS_KEY_ID`. Production and nonproduction may use different accounts, registries and clusters. Only the selected bundle must be complete; the unused bundle can be empty.
+For example, production uses `TAOTARO_PROD_REGION_ID` and `TAOTARO_PROD_ALICLOUD_ACCESS_KEY_ID`. Production and nonproduction may use different accounts, registries and clusters. Only the selected bundle must be complete; the unused bundle can be empty.
 
-An independent application repository can configure **all six** `LUMIO_TARGET_*` members in its GitHub Environment to replace the entire selected default bundle. Any nonempty override member activates the override; incomplete overrides fail before build/cloud. Never fill missing override members from defaults or override individual PROD/NONPROD members for another account. Reserve TARGET for full Environment overrides; keep it absent at Organization/repository scope. GitHub merges same-name values per key, not atomically per bundle. Local code cannot infer their original scope or prove cloud ownership.
+An independent application repository can configure **all six** `TAOTARO_TARGET_*` members in its GitHub Environment to replace the entire selected default bundle. Any nonempty override member activates the override; incomplete overrides fail before build/cloud. Never fill missing override members from defaults or override individual PROD/NONPROD members for another account. Reserve TARGET for full Environment overrides; keep it absent at Organization/repository scope. GitHub merges same-name values per key, not atomically per bundle. Local code cannot infer their original scope or prove cloud ownership.
 
 All six routed cloud Secrets are optional in schema and explicitly transmitted by name in thin callers, even when caller-context expressions resolve empty because the values exist only in the actual Environment. No `secrets: inherit` or central-repository Secrets. Namespace, image repository, overlay, resources and application configuration remain existing application Environment parameters. The selected credentials/registry/region/instance/cluster are validated together and used consistently by ACR and ACK. Credentials are never newly printed by the resolver.
 
@@ -25,6 +25,10 @@ Metadata identifiers use letters/digits/dot/underscore/hyphen; registry is a hos
 ## Compatibility and migration
 
 Published `8e9d563eac561080c4ea9816b00a7e5da4559516` remains immutable with its original explicit-call interface. The new revision defaults `target_routing` to `explicit`, still requiring the complete four infrastructure inputs and explicitly transmitted legacy ALICLOUD credentials at runtime. No routed fallback in explicit mode. Routed calls reject nonempty legacy bindings.
+
+Canonical configuration uses the organization name TAOTARO, not the product name Lumio. During migration the central workflow retains the old six `LUMIO_*` Secret inputs and job bindings for existing callers. Namespace selection only considers the validated environment's default credentials and TARGET overrides: any TAOTARO_TARGET member or selected TAOTARO credential selects TAOTARO; otherwise complete legacy credentials select LUMIO while new default Variables are staged. With no legacy credentials, TAOTARO is required. Unused defaults do not affect selection. Once TAOTARO is selected, a partial group fails without LUMIO field fallback. An existing LUMIO_TARGET override must be migrated to a complete TAOTARO_TARGET override before selecting new default credentials; it cannot be silently ignored. No cross-prefix or per-key credential mixing.
+
+Publish the central additive compatibility revision first. Stage new default Variables without deleting old items, then set new-name Org Secrets with All repositories before publishing new callers. Secret values must be supplied by their owner, not retrieved or copied from GitHub by the initializer. Review actual repository Environment overrides and all remaining old callers before retiring legacy configuration. A generated TAOTARO caller is not deployment-ready just because it parses locally.
 
 To migrate, prepare complete defaults/override under separate platform authorization, replace four legacy infrastructure inputs and two legacy cloud Secret mappings with `target_routing: environment` and six named routed Secrets, then review/adopt `taotaro/ack-deployment-workflow/.github/workflows/deploy-ack.yaml@main`. New onboarding uses main by default; central changes apply on the application's next new workflow run and do not themselves trigger deployment. Record the resolved central SHA in runtime evidence. Old explicit pins remain supported, but do not gain new routing behavior until migrated. Do not auto-push callers or auto-deploy applications.
 

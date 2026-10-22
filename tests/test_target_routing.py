@@ -12,11 +12,12 @@ from test_workflow import CENTRAL, IMPL, WF, W, STEPS, execute, script, apply_en
 
 SUFFIXES = ('REGION_ID', 'ACR_REGISTRY', 'ACR_INSTANCE_ID', 'ACK_CLUSTER_ID',
             'ALICLOUD_ACCESS_KEY_ID', 'ALICLOUD_ACCESS_KEY_SECRET')
-SECRET_NAMES = {f'LUMIO_{p}_{s}' for p in ('PROD', 'NONPROD', 'TARGET') for s in SUFFIXES[4:]}
+SECRET_NAMES = {f'TAOTARO_{p}_{s}' for p in ('PROD', 'NONPROD', 'TARGET') for s in SUFFIXES[4:]}
+LEGACY_SECRET_NAMES = {s.replace('TAOTARO_', 'LUMIO_', 1) for s in SECRET_NAMES}
 
-def bundle(prefix, label):
+def bundle(prefix, label, namespace='TAOTARO'):
     values = (label+'-region', label+'.example:443', label+'-instance', label+'-cluster', label+'-ak', label+'-sk')
-    return {f'LUMIO_{prefix}_{s}': v for s, v in zip(SUFFIXES, values)}
+    return {f'{namespace}_{prefix}_{s}': v for s, v in zip(SUFFIXES, values)}
 
 class Routing(unittest.TestCase):
     def fixture(self, root, profile='single-app', identity='dev'):
@@ -24,6 +25,8 @@ class Routing(unittest.TestCase):
         env.update(INPUT_TARGET_ROUTING='environment', ENV_NAME=identity)
         for suffix in SUFFIXES[:4]: env['INPUT_'+suffix] = ''
         for suffix in SUFFIXES[4:]: env[suffix] = ''
+        for name in list(env):
+            if name.startswith(('TAOTARO_', 'LUMIO_')): env.pop(name)
         env.update({**bundle('PROD', 'prod'), **bundle('NONPROD', 'test')})
         return env
 
@@ -32,10 +35,11 @@ class Routing(unittest.TestCase):
         result = execute(script('Resolve infrastructure target'), env, root)
         self.assertEqual(result.returncode == 0, success, result.stderr)
         # Neither selected nor unused credentials appear in process logs.
-        for prefix in ('PROD', 'NONPROD', 'TARGET'):
-            for suffix in SUFFIXES[4:]:
-                value = env.get(f'LUMIO_{prefix}_{suffix}')
-                if value: self.assertNotIn(value, result.stdout+result.stderr)
+        for namespace in ('TAOTARO', 'LUMIO'):
+            for prefix in ('PROD', 'NONPROD', 'TARGET'):
+                for suffix in SUFFIXES[4:]:
+                    value = env.get(f'{namespace}_{prefix}_{suffix}')
+                    if value: self.assertNotIn(value, result.stdout+result.stderr)
         if success:
             resolved = dict(env); apply_env(resolved, root/'env')
             return resolved
@@ -47,7 +51,7 @@ class Routing(unittest.TestCase):
                 root=Path(d); env=self.fixture(root, identity=identity)
                 label='prod' if identity in ('prod','prd','production') else 'test'
                 unused='NONPROD' if label=='prod' else 'PROD'
-                for s in SUFFIXES: env[f'LUMIO_{unused}_{s}']=''
+                for s in SUFFIXES: env[f'TAOTARO_{unused}_{s}']=''
                 resolved=self.resolve(env,root)
                 self.assertEqual([resolved['RESOLVED_'+s] for s in SUFFIXES], list(bundle('TARGET',label).values()))
                 self.assertEqual(resolved['IMAGE_URL'], label+'.example:443/team/app')
@@ -70,7 +74,7 @@ class Routing(unittest.TestCase):
                 env.update(REPOSITORY=repository,INPUT_GITHUB_ENVIRONMENT='development-env', **bundle('TARGET',repository))
                 # Override is sufficient with BOTH default bundles absent.
                 for p in ('PROD','NONPROD'):
-                    for s in SUFFIXES:env[f'LUMIO_{p}_{s}']=''
+                    for s in SUFFIXES:env[f'TAOTARO_{p}_{s}']=''
                 resolved=self.resolve(env,root)
                 self.assertEqual([resolved['RESOLVED_'+s] for s in SUFFIXES],list(bundle('TARGET',repository).values()))
         for service in ('user-api','business-api','payment-api','task-worker'):
@@ -83,18 +87,18 @@ class Routing(unittest.TestCase):
         for missing in SUFFIXES:
             with self.subTest(missing=missing),tempfile.TemporaryDirectory() as d:
                 root=Path(d);env=self.fixture(root);env.update(bundle('TARGET','alternate'))
-                env['LUMIO_TARGET_'+missing]='';self.resolve(env,root,False)
+                env['TAOTARO_TARGET_'+missing]='';self.resolve(env,root,False)
             with tempfile.TemporaryDirectory() as d:
-                root=Path(d);env=self.fixture(root);env['LUMIO_NONPROD_'+missing]='';self.resolve(env,root,False)
+                root=Path(d);env=self.fixture(root);env['TAOTARO_NONPROD_'+missing]='';self.resolve(env,root,False)
         for only in SUFFIXES:
             with tempfile.TemporaryDirectory() as d:
-                root=Path(d);env=self.fixture(root);env['LUMIO_TARGET_'+only]=bundle('TARGET','alternate')['LUMIO_TARGET_'+only]
+                root=Path(d);env=self.fixture(root);env['TAOTARO_TARGET_'+only]=bundle('TARGET','alternate')['TAOTARO_TARGET_'+only]
                 self.resolve(env,root,False)
         cases=[('ENV_NAME','unknown'),('INPUT_TARGET_ROUTING','anything'),('INPUT_REGION_ID','legacy-region'),
                ('ALICLOUD_ACCESS_KEY_ID','legacy-ak'),('INPUT_TARGET_ENV','production'),
-               ('LUMIO_NONPROD_ACR_REGISTRY','https://bad'),('LUMIO_NONPROD_ACR_REGISTRY','test.example:70000'),
-               ('LUMIO_NONPROD_REGION_ID','region\ninjection'),('LUMIO_NONPROD_ACR_INSTANCE_ID','instance space'),
-               ('LUMIO_NONPROD_ACK_CLUSTER_ID','../cluster'),('LUMIO_NONPROD_ALICLOUD_ACCESS_KEY_SECRET','secret space')]
+               ('TAOTARO_NONPROD_ACR_REGISTRY','https://bad'),('TAOTARO_NONPROD_ACR_REGISTRY','test.example:70000'),
+               ('TAOTARO_NONPROD_REGION_ID','region\ninjection'),('TAOTARO_NONPROD_ACR_INSTANCE_ID','instance space'),
+               ('TAOTARO_NONPROD_ACK_CLUSTER_ID','../cluster'),('TAOTARO_NONPROD_ALICLOUD_ACCESS_KEY_SECRET','secret space')]
         for name,value in cases:
             with self.subTest(name=name,value=value),tempfile.TemporaryDirectory() as d:
                 root=Path(d);env=self.fixture(root);env[name]=value;self.resolve(env,root,False)
@@ -126,10 +130,56 @@ class Routing(unittest.TestCase):
             self.assertEqual(resolved['RESOLVED_ACK_CLUSTER_ID'],'synthetic-cluster')
             env['ALICLOUD_ACCESS_KEY_SECRET']='';self.resolve(env,root,False)
 
+    def test_legacy_callers_survive_staged_default_variables(self):
+        for profile, identity, selected in [('single-app', 'dev', 'NONPROD'), ('service', 'production', 'PROD')]:
+            with self.subTest(profile=profile), tempfile.TemporaryDirectory() as d:
+                root=Path(d);env=self.fixture(root,profile,identity)
+                env.update(bundle(selected,'legacy','LUMIO'))
+                for s in SUFFIXES[4:]:env[f'TAOTARO_{selected}_{s}']=''
+                # New default Variables, even partial, are merely staged while
+                # this caller still supplies the complete legacy credentials.
+                env[f'TAOTARO_{selected}_REGION_ID']=''
+                resolved=self.resolve(env,root)
+                self.assertEqual([resolved['RESOLVED_'+s] for s in SUFFIXES],list(bundle(selected,'legacy','LUMIO').values()))
+                env.update(bundle('TARGET','legacy-target','LUMIO'))
+                resolved=self.resolve(env,root)
+                self.assertEqual(resolved['RESOLVED_ACK_CLUSTER_ID'],'legacy-target-cluster')
+
+    def test_canonical_namespace_precedence_and_no_field_fallback(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);env=self.fixture(root);env.update(bundle('NONPROD','legacy','LUMIO'))
+            resolved=self.resolve(env,root)
+            self.assertEqual([resolved['RESOLVED_'+s] for s in SUFFIXES],list(bundle('NONPROD','test').values()))
+        for missing in SUFFIXES:
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as d:
+                root=Path(d);env=self.fixture(root);env.update(bundle('NONPROD','legacy','LUMIO'))
+                env['TAOTARO_NONPROD_'+missing]=''
+                self.resolve(env,root,False)
+
+    def test_cross_namespace_target_never_ignored_or_mixed(self):
+        for only in SUFFIXES:
+            with self.subTest(only=only), tempfile.TemporaryDirectory() as d:
+                root=Path(d);env=self.fixture(root);env.update(bundle('NONPROD','legacy','LUMIO'))
+                for s in SUFFIXES[4:]:env['TAOTARO_NONPROD_'+s]=''
+                env['TAOTARO_TARGET_'+only]=bundle('TARGET','alternate')['TAOTARO_TARGET_'+only]
+                self.resolve(env,root,False)
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);env=self.fixture(root);env.update(bundle('TARGET','legacy-target','LUMIO'))
+            self.resolve(env,root,False)  # Never discard the old override for a new default.
+            env.update(bundle('TARGET','canonical-target'))
+            resolved=self.resolve(env,root)
+            self.assertEqual([resolved['RESOLVED_'+s] for s in SUFFIXES],list(bundle('TARGET','canonical-target').values()))
+
     def test_thin_callers_schema_and_consistent_cloud_bindings(self):
         schema=W['on']['workflow_call']
         self.assertEqual(schema['inputs']['target_routing']['default'],'explicit')
-        for s in SECRET_NAMES:self.assertEqual(str(schema['secrets'][s]['required']).lower(),'false')
+        for s in SECRET_NAMES | LEGACY_SECRET_NAMES:self.assertEqual(str(schema['secrets'][s]['required']).lower(),'false')
+        for namespace in ('TAOTARO', 'LUMIO'):
+            for prefix in ('PROD', 'NONPROD', 'TARGET'):
+                for s in SUFFIXES:
+                    name=f'{namespace}_{prefix}_{s}'
+                    context='vars' if s in SUFFIXES[:4] else 'secrets'
+                    self.assertEqual(W['jobs']['deploy']['env'][name], '${{ '+context+'.'+name+' }}')
         for path in (CENTRAL/'templates/ack/caller.yaml.tmpl', IMPL/'render'/WF, IMPL/'services'/WF):
             caller=load(path);job=caller['jobs'].get('build',caller['jobs'].get('build_and_deploy'))
             self.assertEqual(job['with']['target_routing'],'environment')

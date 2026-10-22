@@ -40,7 +40,7 @@ The central workflow validates inputs and image identity, logs into ACR, builds/
 
 ## Target bundles and migration
 
-Generated callers use `target_routing: environment`. Complete PROD/NONPROD defaults and optional full repository Environment TARGET overrides resolve inside the actual caller Environment job. See [target configuration and migration](TARGET-CONFIG.md) for exact names, fail-closed aliases, explicit Secret mappings and compatibility with published `8e9d563eac561080c4ea9816b00a7e5da4559516`. Services in the same repository/Environment share one target. Local tests do not establish real GitHub precedence or cloud ownership.
+Generated callers use `target_routing: environment` and explicitly named `TAOTARO_PROD_*`, `TAOTARO_NONPROD_*`, `TAOTARO_TARGET_*` cloud Secrets. TAOTARO is the organization prefix; application/product names remain unchanged. Complete PROD/NONPROD defaults and optional full repository Environment TARGET overrides resolve inside the actual caller Environment job. See [target configuration and migration](TARGET-CONFIG.md) for exact names, fail-closed aliases, explicit Secret mappings and compatibility with published `8e9d563eac561080c4ea9816b00a7e5da4559516`. Services in the same repository/Environment share one target. Local tests do not establish real GitHub precedence or cloud ownership. Publish additive central compatibility before caller migration; existing LUMIO callers remain supported without cross-prefix field fallback. Set the new-name Secrets and review TARGET overrides before publishing generated callers. Keep legacy configuration until all old callers have migrated; do not use dummy credentials.
 
 ## VPS pull (unchanged)
 
