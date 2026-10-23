@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Synthetic-only local proof; no real Docker, kubectl, credentials or notifications."""
+import ast
 import copy
 import json
 import os
@@ -30,6 +31,38 @@ def apply_env(env,path):
         k,v=line.split('=',1);env[k]=v
 
 class Proof(unittest.TestCase):
+    def test_optional_lark_notification(self):
+        notification = next(s for s in STEPS if s.get('name') == 'Send Notification To Lark')
+        self.assertEqual(W['on']['workflow_call']['secrets']['LARK_BOT_WEBHOOK'],
+                         {'required': 'false'})
+        self.assertEqual(W['jobs']['deploy']['env']['LARK_BOT_WEBHOOK'],
+                         '${{ secrets.LARK_BOT_WEBHOOK }}')
+        self.assertEqual(notification['uses'], 'taotaro/actions-toolkit@send-action-notification-to-lark')
+        self.assertEqual(notification['with']['webhook'], '${{ secrets.LARK_BOT_WEBHOOK }}')
+        self.assertEqual(notification['with']['status'], '${{ job.status }}')
+        self.assertNotIn('continue-on-error', notification)
+        self.assertNotIn('continue-on-error', W['jobs']['deploy'])
+        condition = notification['if']
+        self.assertTrue(condition.startswith('${{') and condition.endswith('}}'))
+        self.assertIn('always()', condition)
+        for profile in ('single-app', 'service'):
+            for webhook in ('', 'https://example.invalid/synthetic-webhook', '   '):
+                for prior_status in ('success', 'failure', 'cancelled'):
+                    with self.subTest(profile=profile, webhook=webhook, prior_status=prior_status):
+                        # GitHub always() is true for all three prior statuses, including cancellation.
+                        # Resolve absent optional Secrets as ''; do not normalize configured whitespace.
+                        expression = condition[3:-2].strip().replace('always()', 'True')
+                        expression = expression.replace('&&', ' and ').replace('||', ' or ')
+                        expression = expression.replace('inputs.profile', repr(profile))
+                        expression = expression.replace('env.LARK_BOT_WEBHOOK', repr(webhook))
+                        tree = ast.parse(expression, mode='eval')
+                        allowed = (ast.Expression, ast.BoolOp, ast.And, ast.Or,
+                                   ast.Compare, ast.Eq, ast.NotEq, ast.Constant)
+                        self.assertTrue(all(isinstance(node, allowed) for node in ast.walk(tree)),
+                                        expression)
+                        actual = eval(compile(tree, '<notification-if>', 'eval'), {'__builtins__': {}})
+                        self.assertIs(actual, webhook != '')
+
     def test_schema_shell_and_unchanged_boundaries(self):
         self.assertEqual(len(W['on']['workflow_call']['inputs']),27)
         self.assertEqual(sum(v.get('required') is True or v.get('required')=='true' for v in W['on']['workflow_call']['inputs'].values()),3)

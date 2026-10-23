@@ -724,7 +724,7 @@ jobs:
         echo "value=$(date +%s)" >> "$GITHUB_OUTPUT"
         echo "END_TIME=$(date +%s)" >> "$GITHUB_ENV"
     - name: Send Notification To Lark
-      if: ${{ always() && (inputs.profile == 'single-app' || env.LARK_BOT_WEBHOOK != '') }}
+      if: ${{ always() && env.LARK_BOT_WEBHOOK != '' }}
       uses: taotaro/actions-toolkit@send-action-notification-to-lark
       with:
         webhook: ${{ secrets.LARK_BOT_WEBHOOK }}
